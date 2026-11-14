@@ -27,7 +27,7 @@ from .agent_loop import (
     _FACT_MARKER,
     _context_facts,
 )
-from .redaction import has_hidden_reasoning, redact_text, INTERNAL_REFERENCE_PATTERN
+from .redaction import has_hidden_reasoning, public_conversation_text, redact_text, INTERNAL_REFERENCE_PATTERN
 from .recommender_adapter import ConversationEventPersistenceSink
 from .tool_failure_recovery import ToolFailureRecovery
 from .runtime_model_proxy import RuntimeModelProxy
@@ -144,6 +144,10 @@ class OptionConversationAgent:
             "preset_id": getattr(self._gateway, "multi_agent_recommendation_preset_for", lambda _: "sequential-deliberation")(identity),
             "research_depth": getattr(self._gateway, "research_depth_for", lambda _: "standard")(identity),
         }
+        execution_settings = current_context["facts"]["current_recommendation_execution"]
+        for key, value in (execution_ids or {}).items():
+            if key.startswith("research_") and key.removeprefix("research_") in execution_settings:
+                execution_settings[key.removeprefix("research_")] = value
         entry = self._entry(identity, task_id)
         timer = entry.get("idle_timer")
         if timer is not None:
@@ -158,6 +162,12 @@ class OptionConversationAgent:
             if callable(getattr(self._tasks, "get", None)):
                 path_context = {"messages": self._tasks.get(identity, task_id).get("messages", [])}
             entry["confirmed_path_count"] = _user_path_count(path_context, message, entry.get("question"))
+            from modules.recommender.interaction import extract_confirmed_constraints
+            from runtime.research_policy import blocked_research_modules
+            from .recommender_adapter import _recommendation_research_prompt
+            scope = _recommendation_research_prompt(path_context.get("messages", []), message)
+            entry["confirmed_pricing"] = extract_confirmed_constraints([{"role": "user", "content": scope}])
+            entry["blocked_research_modules"] = blocked_research_modules(scope)
             entry["observations"] = []
             entry.pop("required_recommendation_result", None)
             entry.pop("completed_recommendation_deliveries", None)
@@ -171,6 +181,10 @@ class OptionConversationAgent:
             entry["route"] = route
             entry["transport"].route_refs[route.route_id] = route
             self._ensure_activated(entry, current_context, route)
+            direct_outcome = self._deliver_direct_contract(entry, identity, task_id, attachments or [])
+            if direct_outcome is not None:
+                self._schedule_idle_close(identity, task_id, entry)
+                return direct_outcome
             delivery_outcome = self._prime_required_recommendation(entry, identity, task_id, attachments or [])
             if delivery_outcome is not None:
                 self._schedule_idle_close(identity, task_id, entry)
@@ -213,26 +227,33 @@ class OptionConversationAgent:
             if response.pop("_fact_repair_needed", False) and not entry.get("question") and not self._is_cancelled(identity, task_id):
                 # One same-session formatting correction. No tool can run or
                 # change inputs; the existing verified observations are reused.
-                corrected = self._request_turn(identity, task_id, entry, "agent.turn", {
-                    "runId": entry["run_id"],
-                    "prompt": "上一段答复的计算数值未通过引用核对。请保留对用户问题的完整回答，"
-                              "只依据已有工具结果修正数值表达，不调用任何工具、不重新计算。"
-                              "所有计算数值后紧接对应[fact:fact_xxx]，标记放在单位前，不留空格。"
-                              "可以按精度四舍五入，小数或科学记数法使用普通字符，如2.5584e-7。"
-                              "正文不重复无引用数值；没有结果支持的数值应明确尚未核实。"
-                              "参数、产品编号、日期、知识公式、理论区间和知识库教学案例照常保留，不需要计算引用，也不要标为未核实。"
-                              "不要讨论核对协议。不要把期初费用说成完全不影响估值，"
-                              "费用影响要以当前运行的cashflow_lifecycle和合同现金流为准。"
-                              "fact_ref必须逐字完整复制，不得截短。decimal_ratio显示为百分数时须乘100，不能给原值直接加%。"
-                              "以下是本轮可用事实，请优先按readable_display复制数值和引用，正文只保留必要指标：\n"
-                              + _fact_repair_catalog(list(entry["observations"]), _context_facts(current_context)),
-                    "modelRouteRef": route.to_dict(),
-                    "toolPolicy": {"allowedTools": [], "parallelTools": False},
-                    "contextPolicy": _context_policy(),
-                    "budget": {"maxSteps": 1, "maxTools": 0},
-                }, request_id=f"main-{_digest(message)}-fact-repair", timeout=_TURN_SECONDS)
+                sink = entry["sink"]
+                sink.flush()
+                entry["checking_final_numbers"] = True
+                try:
+                    corrected = self._request_turn(identity, task_id, entry, "agent.turn", {
+                        "runId": entry["run_id"],
+                        "prompt": "上一段答复的计算数值未通过引用核对。请保留对用户问题的完整回答，"
+                                  "只依据已有工具结果修正数值表达，不调用任何工具、不重新计算。"
+                                  "所有计算数值后紧接对应[fact:fact_xxx]，标记放在单位前，不留空格。"
+                                  "可以按精度四舍五入，小数或科学记数法使用普通字符，如2.5584e-7。"
+                                  "正文不重复无引用数值；没有结果支持的数值应明确尚未核实。"
+                                  "参数、产品编号、日期、知识公式、理论区间和知识库教学案例照常保留，不需要计算引用，也不要标为未核实。"
+                                  "直接给一份可独立阅读的正文。既不要写修正或核对过程，也不要重复报告内容。不要把期初费用说成完全不影响估值，"
+                                  "费用影响要以当前运行的cashflow_lifecycle和合同现金流为准。"
+                                  "fact_ref必须逐字完整复制，不得截短。decimal_ratio显示为百分数时须乘100，不能给原值直接加%。"
+                                  "以下是本轮可用事实，请优先按readable_display复制数值和引用，正文只保留必要指标：\n"
+                                  + _fact_repair_catalog(list(entry["observations"]), _context_facts(current_context)),
+                        "modelRouteRef": route.to_dict(),
+                        "toolPolicy": {"allowedTools": [], "parallelTools": False},
+                        "contextPolicy": _context_policy(),
+                        "budget": {"maxSteps": 1, "maxTools": 0},
+                    }, request_id=f"main-{_digest(message)}-fact-repair", timeout=_TURN_SECONDS)
+                finally:
+                    sink.flush()
+                    entry["checking_final_numbers"] = False
                 response = self._validated_response(_result_text(corrected), identity, current_context,
-                    list(entry["observations"]), _result_blocks(corrected))
+                    list(entry["observations"]), [block for block in blocks if block["type"] == "reasoning"])
                 response.pop("_fact_repair_needed", None)
             workflow = _conversation_workflow(current_context, message)
             if (workflow.analysis_path == "recommendation" and workflow.execution_semantics == "multi_agent"
@@ -255,6 +276,57 @@ class OptionConversationAgent:
         self._schedule_idle_close(identity, task_id, entry)
         return response
 
+    def _deliver_direct_contract(self, entry, identity, task_id, attachments):
+        """Run explicitly specified contracts without reinterpreting frozen inputs."""
+        from modules.recommender.interaction import confirmed_term_overrides, mentioned_product_ids
+        from ..report_delivery import delivery_request, delivery_targets, existing_results_only, required_delivery_modules
+
+        message = entry["user_message"]
+        request = delivery_request(message)
+        decision = _conversation_workflow(entry["context"], message)
+        constraints = entry["confirmed_pricing"]
+        if (attachments or not request or request["export_only"] or existing_results_only(message)
+                or decision.analysis_path != "direct_module"
+                or not {"underlying", "valuation_date", "model_method"}.issubset(constraints)):
+            return None
+        products = mentioned_product_ids(message)
+        targets = delivery_targets(request)
+        if len(products) != 1 or any(target["template"].startswith("multi") for target in targets):
+            return None
+        product = products[0]
+        # The original direct-tool path handles open-ended and exotic contracts.
+        if product not in {"1.1", "1.2", "2.1", "2.2", "2.3", "2.4"}:
+            return None
+        terms = confirmed_term_overrides(constraints, product_id=product)
+        required_terms = {"K", "Pi_0"} if product.startswith("1.") else {"K1", "K2", "P_net"}
+        if not (required_terms | {"T"}).issubset(terms):
+            return None
+        modules = tuple(dict.fromkeys(module for target in targets
+                                     for module in required_delivery_modules(message, target["template"])))
+        if "backtester" in modules or not modules:
+            return None
+        for module in modules:
+            arguments = {"product_id": product, "term_overrides": terms}
+            if module == "pricer":
+                arguments["identity"] = {"underlyings": [constraints["underlying"]]}
+            receipt = self._tool_call(entry, identity, task_id, {
+                "toolName": f"{module}_run", "arguments": arguments,
+            })
+            if receipt.get("status") not in {"succeeded", "completed"}:
+                notice = receipt.get("message") or "本次合同计算未完成，无法生成正式报告。"
+                return _result(receipt.get("status", "failed"), notice, entry["observations"])
+        receipts = []
+        entry["context"]["facts"]["current_report_delivery"] = receipts
+        for target in targets:
+            kind, fmt = target["template"], target["format"]
+            receipt = self._tool_call(entry, identity, task_id, {
+                "toolName": "reporter_run", "arguments": {"kind": kind, "format": fmt, "product_ids": [product]},
+            })
+            receipts.append(receipt)
+            if not _complete_delivery_receipt(receipt):
+                return _incomplete_recommendation_delivery_response(entry, receipt)
+        return _report_receipt_response(entry, receipts)
+
     def _prime_required_recommendation(self, entry, identity, task_id, attachments):
         """Dispatch a required multi-agent workflow once, independent of old prose.
 
@@ -262,7 +334,10 @@ class OptionConversationAgent:
         user turn resets this receipt; same-turn retries reuse its real result.
         """
         decision = _conversation_workflow(entry.get("context", {}), entry.get("user_message", ""))
-        if attachments or decision.analysis_path != "recommendation" or decision.execution_semantics != "multi_agent":
+        delivery = _recommendation_delivery_request(entry)
+        named_comparison = bool(delivery and any(kind.startswith("multi") for kind in delivery.get("templates", ())))
+        if (attachments or decision.analysis_path != "recommendation"
+            or decision.execution_semantics != "multi_agent" and not named_comparison):
             return
         result = self._tool_call(entry, identity, task_id, {
             "toolName": "recommender_run", "arguments": {"prompt": entry["user_message"]},
@@ -339,10 +414,13 @@ class OptionConversationAgent:
                     workflow_id=workflow_id,
                     payload={**dict(event.payload), "runtime_scope": "main_agent"},
                 )
+                stored = projected.to_dict()
+                if entry.get("checking_final_numbers"):
+                    stored["payload"]["checking_final_numbers"] = True
                 self._tasks.session_event_log.append(
                     session_id,
                     "runtime.event",
-                    {"runtime_event": projected.to_dict()},
+                    {"runtime_event": stored},
                     event_id=f"runtime:{projected.event_id}",
                     ignorable=True,
                 )
@@ -598,6 +676,9 @@ class OptionConversationAgent:
                     recovery.record(tool_name, arguments, blocked, stable=True)
                     return blocked
             if tool_name in {"payoffer.run", "pricer.run", "backtester.run"}:
+                if tool_name.split(".", 1)[0] in entry.get("blocked_research_modules", ()):
+                    return {"status": "failed", "failure_code": "research_module_excluded",
+                            "message": "用户已排除该计算，请按本轮范围继续。"}
                 from runtime.workflow_policy import requests_named_recommendation
                 message = entry.get("user_message", "")
                 decision = _conversation_workflow(entry.get("context", {}), message)
@@ -613,9 +694,15 @@ class OptionConversationAgent:
                     }
                     recovery.record(tool_name, arguments, blocked, stable=True)
                     return blocked
-            if tool_name == "pricer.run":
-                arguments = _confirmed_pricing_arguments(arguments, entry.get("confirmed_path_count"))
             if tool_name in {"payoffer.run", "pricer.run", "backtester.run"}:
+                from modules.recommender.interaction import confirmed_term_overrides
+                product_id = arguments.get("product_id")
+                if isinstance(product_id, str):
+                    terms = confirmed_term_overrides(entry.get("confirmed_pricing", {}), product_id=product_id)
+                    if terms and isinstance(arguments.get("term_overrides", {}), Mapping):
+                        arguments = {**arguments, "term_overrides": {**arguments.get("term_overrides", {}), **terms}}
+                if tool_name == "pricer.run":
+                    arguments = _confirmed_pricing_arguments(arguments, entry.get("confirmed_path_count"), entry.get("confirmed_pricing"))
                 from jsonschema import Draft202012Validator
                 schema = {"type": "object", "properties": _tool_properties(tool_name),
                           "required": _tool_required(tool_name), "additionalProperties": False}
@@ -977,7 +1064,7 @@ def _validated_conversation_text(text, observations, context_facts):
     # Collapse a duplicate percent sign separated only by fact markers.
     # This changes presentation after validation, never the claimed number.
     text = re.sub(r'((?:\\)?%)(?:\[fact:fact_[a-f0-9]{6,64}\])+(?:\\)?%', r'\1', text)
-    text = _FACT_MARKER.sub('', text)
+    text = public_conversation_text(text)
     verified = not invalid and not dangling
     if not verified:
         text += '\n\n本次答复中有计算数值尚未通过结果核对；对应位置已标注，其他内容保留。'
@@ -1192,19 +1279,26 @@ def _user_path_count(context: Mapping[str, Any], message: object, question: obje
     return merge_confirmed_constraints({}, history).get("path_count")
 
 
-def _confirmed_pricing_arguments(arguments: Mapping[str, Any], count: int | None) -> dict[str, Any]:
+def _confirmed_pricing_arguments(arguments: Mapping[str, Any], count: int | None, constraints=None) -> dict[str, Any]:
+    from modules.recommender.interaction import confirmed_pricing_assumptions
     value = dict(arguments)
     config = value.get("pricing_config")
-    if count is None:
-        return value
-    config = dict(config) if isinstance(config, Mapping) else {}
-    if config.get("model_method") not in {None, "monte_carlo", "mc", "MC"}:
-        return value
-    config.update(model_method="monte_carlo", path_count=count)
-    value["pricing_config"] = config
-    # These misplaced fields describe the same explicitly confirmed setting.
-    for key in ("path_count", "mc_paths", "n_paths", "num_paths"):
-        value.pop(key, None)
+    constraints = constraints or {}
+    assumptions = confirmed_pricing_assumptions(constraints)
+    if assumptions:
+        config = {**(config if isinstance(config, Mapping) else {}), **assumptions}
+        # A request for historical volatility binds the calculation to its
+        # declared sample. A role's guessed override must not replace it.
+        if "hv_window" in assumptions:
+            config.pop("volatility_override", None)
+        value["pricing_config"] = config
+    if constraints.get("market_data_asset_id"):
+        value["market_data_asset_id"] = constraints["market_data_asset_id"]
+        value.pop("market_data_refs", None)
+    if count is not None and (not isinstance(config, Mapping) or config.get("model_method") in {None, "monte_carlo", "mc", "MC"}):
+        value["pricing_config"] = {**(config or {}), "model_method": "monte_carlo", "path_count": count}
+        for key in ("path_count", "mc_paths", "n_paths", "num_paths"):
+            value.pop(key, None)
     return value
 
 
@@ -1243,7 +1337,8 @@ def _system_prompt(context: Mapping[str, Any]) -> str:
         "问候后带有问题时直接回答问题；用户询问你能做什么时，结合实际能力简要说明。"
         "面向用户的最终答复使用业务语言：不要暴露工具名、交付状态机、参数键值、报告ID、运行ID、count或CNY等内部枚举。monthly写每月首个交易日入场，complete_tenor写仅使用完整期限合同，数量写个，人民币金额写元。用户明确要求代码或诊断原始字段时才保留技术细节。"
         "收益率和金额通常保留两位小数；很小的非零Greeks保留三位有效数字并用科学记数法，不能舍入成零。负数使用数学减号−。仅调整展示精度，不改变单位、不修改原始计算、不省略未完成事项。最终说明结论与局限，不复述内部调用经过。\n"
-        "答复长度随问题复杂程度调整，不机械限制字数，不在每轮结尾强行追问。\n"
+        "答复长度随问题复杂程度调整。先写结论、关键数字和有关风险，每个结论写一次。同一个数字不用列成表再复述。"
+        "已有报告卡时简短说明交付情况，不重复摘抄整份报告，不提上一稿或修订过程。\n"
         "研究任务答复说明结论与依据，只有实际未完成的工作才说明缺项；普通咨询直接回答，不套用完成清单或下一步问卷。不要只返回一句固定失败提示，也不要让用户必须展开思考过程才能理解结论。\n"
         "用户明确不生成报告时只回答问题，不调用报告工具。用户要求依据内置产品规则时先查询对应产品资料，不凭名称推测条款。"
         "不生成报告不影响用户要求的定价、Greeks和回测，不得把报告流程作为计算失败的原因。"
@@ -1365,6 +1460,7 @@ def _tool_properties(name: str) -> dict[str, Any]:
             "identity": {"type": "object", "properties": {"underlyings": {"type": "array", "items": {"type": "string"}}}},
             "term_overrides": {"type": "object", "description": "沿用本轮明确的合同条款，不包含MC参数。normalized_100合同的S0为100，平值行权价K为100；现货真实价格放在identity.reference_prices中。改变条款必须有用户依据，不能用改变行权价规避计算错误。"},
             "market_data_refs": {"type": "array", "items": {"type": "object"}, "description": "datafetcher_fetch返回的完整DataAssetRef列表。"},
+            "market_data_asset_id": {"type": "string", "pattern": "^data-[a-zA-Z0-9_-]{1,180}$", "description": "用户明确指定复用的本地行情ID。"},
             "trading_calendar_ref": {"type": "object", "description": "交易日历工具返回的完整DataAssetRef。"},
             "pricing_objective": {"type": "object", "properties": {"mode": {"type": "string", "enum": ["valuation", "fair_parameter"]}, "target_id": {"type": "string"}}, "required": ["mode"], "additionalProperties": False},
             "pricing_config": {"type": "object", "properties": {
@@ -1487,6 +1583,8 @@ def _safe_tool_result(
     for field in ("failure_code", "next_step", "stage"):
         if isinstance(raw.get(field), str):
             result[field] = redact_text(raw[field], limit=1_000)
+    if tool_name in {"reporter.run", "recommendation_delivery.run"} and isinstance(raw.get("text"), str):
+        result["text"] = redact_text(raw["text"], limit=1_000)
     if isinstance(verified, Mapping) and isinstance(verified.get("facts"), list):
         result["facts"] = _safe_value(verified.get("facts"))
     if isinstance(verified, Mapping) and isinstance(verified.get("calculation_context"), Mapping):
@@ -1573,11 +1671,11 @@ def _public_assistant_blocks(
         block_type = block.get("type")
         raw_text = block.get("text", "")
         if block_type == "reasoning":
-            safe = redact_text(raw_text, identity, limit=64_000).strip()
+            safe = public_conversation_text(raw_text, identity, limit=64_000).strip()
             if safe and not has_hidden_reasoning(safe):
                 result.append({"type": "reasoning", "text": safe})
         elif block_type == "text":
-            safe = _FACT_MARKER.sub("", redact_text(raw_text, identity, limit=12_000))
+            safe = public_conversation_text(raw_text, identity, limit=12_000)
             if safe:
                 visible_text += safe
                 result.append({"type": "text", "text": safe})
@@ -1736,7 +1834,7 @@ def _incomplete_recommendation_delivery_response(entry, receipt):
         status = "failed"
     if completed and status in {"failed", "unavailable", "blocked"}:
         status = "partial"
-    text = str(receipt.get("message") or "本次交付尚未完成，已有计算结果保留。")
+    text = str(receipt.get("message") or receipt.get("text") or "本次交付尚未完成，已有计算结果保留。")
     next_step = str(receipt.get("next_step") or "").strip()
     if next_step and next_step != text.strip():
         text += "\n\n" + next_step
@@ -1773,6 +1871,10 @@ def _completed_recommendation_delivery_response(entry):
         return None
     if any(not _complete_delivery_receipt(row) for row in receipts):
         return None
+    return _report_receipt_response(entry, receipts)
+
+
+def _report_receipt_response(entry, receipts):
     documents = [row["document"] for row in receipts if isinstance(row.get("document"), Mapping)]
     titles = list(dict.fromkeys(str(row.get("title") or "研究报告") for row in documents))
     subject = "、".join("《" + title + "》" for title in titles) if titles else "研究报告"
