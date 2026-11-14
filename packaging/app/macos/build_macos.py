@@ -1457,7 +1457,8 @@ def normalize_installable_bundle_permissions(bundle: Path) -> None:
     ``copytree`` preserve those modes, but an App carrying 0444 files or 0555
     directories cannot be replaced by Finder after its first installation.
     Code signing protects delivered bytes; resource write bits are not an
-    integrity boundary.
+    integrity boundary. Clear inherited hidden flags on the staged bundle:
+    HFS+ translates them into FinderInfo metadata that strict signing rejects.
     """
 
     if not bundle.is_dir() or bundle.is_symlink() or bundle.name != "OptionHelper.app":
@@ -1466,6 +1467,8 @@ def normalize_installable_bundle_permissions(bundle: Path) -> None:
         if path.is_symlink():
             continue
         metadata = path.stat()
+        if metadata.st_flags & stat.UF_HIDDEN:
+            os.chflags(path, metadata.st_flags & ~stat.UF_HIDDEN)
         if stat.S_ISDIR(metadata.st_mode):
             path.chmod(0o755)
         elif stat.S_ISREG(metadata.st_mode):
@@ -1814,7 +1817,7 @@ def build_macos(
         manifest = json.loads(json.dumps(manifest, ensure_ascii=False, allow_nan=False))
         write_json(resources / "app-manifest.json", manifest)
         normalize_installable_bundle_permissions(bundle)
-        run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)])
+        run([str(backend), "--probe-pdf-runtime", "--resource-dir", str(resources)], cwd=backend.parent)
         probe_compute_worker(backend, resources, temporary)
         probe_backend_startup(backend, resources, temporary)
         verify_bundle(
