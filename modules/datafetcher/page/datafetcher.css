@@ -45,11 +45,13 @@ html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, 
 #request-form .data-setting-row::after { content:""; position:absolute; right:13px; top:13px; width:6px; height:6px; border-right:1.5px solid var(--muted); border-bottom:1.5px solid var(--muted); transform:rotate(45deg); pointer-events:none; }
 #request-form .data-setting-row > span:not(.oh-choice) { flex-shrink:0; }
 #request-form .data-setting-row select { flex:1; width:0; min-width:0; height:34px; min-height:34px; margin:0; padding:0 23px 0 0!important; border:0!important; border-radius:0; background:transparent!important; box-shadow:none!important; color:var(--muted); text-align:right; font-size:12px; font-weight:400; cursor:default; }
-#request-form .data-setting-row:focus-within { outline:2px solid var(--red); outline-offset:2px; }
+#request-form .data-setting-row:focus-within { background-color:var(--action-focus-tint); }
 #request-form .data-setting-row select:focus { outline:none; }
 /* The hosted select owns its arrow; keep its trigger inside the single row. */
 #request-form .data-setting-row:has(.oh-choice)::after { content:none; }
 #request-form .data-setting-row .oh-choice { flex:1; min-width:0; }
+#request-form .data-setting-row select { --field-focus-fill:transparent; }
+#request-form .data-setting-row .oh-choice__trigger { --action-focus-tint:transparent; }
 #request-form .data-setting-row .oh-choice__trigger { min-height:34px; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; justify-content:flex-end; gap:14px; color:var(--muted); font-size:12px; font-weight:400; }
 #request-form .data-setting-row .oh-choice__trigger:focus-visible { outline:none; }
 
