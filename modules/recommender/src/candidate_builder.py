@@ -51,7 +51,7 @@ def create_term_variant(
         raise RecommendationValidationError("generation_reason不能为空")
     current_inputs = dict(candidate.current_inputs)
     if reason != "user_term_override":
-        locked = confirmed_term_overrides(current_inputs.get("confirmed_constraints", {}))
+        locked = confirmed_term_overrides(current_inputs.get("confirmed_constraints", {}), product_id=candidate.product_id)
         conflicts = [key for key, value in locked.items() if key in overrides and overrides[key] != value]
         if conflicts:
             raise RecommendationValidationError("研究变体不得修改用户已确认条款：" + ",".join(sorted(conflicts)))
@@ -156,6 +156,7 @@ def build_candidates(
     seen_products: set[str] = set()
     accepted_rows: list[tuple[tuple[int, int, int], dict[str, Any], tuple[EvidenceRef, ...]]] = []
     rejected: list[Mapping[str, Any]] = []
+    requested_products = set((confirmed_constraints or {}).get("comparison_product_ids", ()))
 
     for position, raw in enumerate(proposals, start=1):
         if not isinstance(raw, Mapping):
@@ -168,6 +169,9 @@ def build_candidates(
         if not product_id or product_id in seen_products:
             raise RecommendationValidationError("Selector候选product_id为空或重复")
         seen_products.add(product_id)
+        if requested_products and product_id not in requested_products:
+            rejected.append({"product_id": product_id, "reason": "不在用户指定的比较范围内", "source": "constraint_gate"})
+            continue
         review = dict(review_index.get(product_id, {}))
         if bool(review.get("hard_reject")):
             rejected.append({"product_id": product_id, "reason": str(review.get("rejection_reason") or "Reviewer拒绝"), "source": "Reviewer"})
@@ -203,12 +207,16 @@ def build_candidates(
         row["library_status"] = status
         row["not_suitable_for"] = list(dict.fromkeys(_string_list(row.get("not_suitable_for")) + _string_list(review.get("additional_not_suitable_for"))))
         row["main_risks"] = list(dict.fromkeys(_string_list(row.get("main_risks")) + _string_list(review.get("additional_risks"))))
+        proposed_terms = row.get("term_overrides")
+        row["term_overrides"] = {
+            **(dict(proposed_terms) if isinstance(proposed_terms, Mapping) else {}),
+            **confirmed_term_overrides(confirmed_constraints or {}, product_id=product_id),
+        }
         if callable(candidate_validator) and status == "ready":
             try:
-                candidate_validator(product_id, {
-                    **dict(row.get("term_overrides") or {}),
-                    **confirmed_term_overrides(confirmed_constraints or {}),
-                })
+                normalized_terms = candidate_validator(product_id, row["term_overrides"])
+                if isinstance(normalized_terms, Mapping):
+                    row["term_overrides"] = dict(normalized_terms)
             except ValueError as error:
                 rejected.append({"product_id": product_id, "reason": str(error),
                                  "source": "proposal_constraint_gate"})
@@ -236,10 +244,7 @@ def build_candidates(
                     for key, value in (confirmed_constraints or {}).items()
                     if not str(key).startswith("_")
                 },
-                "term_overrides": {
-                    **(dict(row["term_overrides"]) if isinstance(row.get("term_overrides"), Mapping) else {}),
-                    **confirmed_term_overrides(confirmed_constraints or {}),
-                },
+                "term_overrides": row["term_overrides"],
             },
         })
         row.pop("term_overrides", None)
