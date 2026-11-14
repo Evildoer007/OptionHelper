@@ -391,7 +391,7 @@ def verify(
         state_root = Path(environment["TMPDIR"]) / "state"
         probe = subprocess.run(isolated_macos_command(
             [str(backend), "--probe-runtime-environment", "--resource-dir", str(resources)],
-            blocked_roots=(ROOT,)), env=environment, capture_output=True, text=True, timeout=30)
+            blocked_roots=(ROOT,)), cwd=backend.parent, env=environment, capture_output=True, text=True, timeout=30)
         require(probe.returncode == 0, "隔离环境时区探测失败：" + probe.stderr[-1200:])
         prefix = "OPTIONHELPER_RUNTIME_ENVIRONMENT="
         lines = [line for line in probe.stdout.splitlines() if line.startswith(prefix)]
@@ -408,6 +408,7 @@ def verify(
             stderr=subprocess.STDOUT,
             text=True,
             env=environment,
+            cwd=backend.parent,
             start_new_session=True,
         )
         connection: http.client.HTTPConnection | None = None
