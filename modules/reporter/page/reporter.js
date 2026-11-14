@@ -3,6 +3,10 @@
   const state = { catalog: null, source: null, selected: new Set(), comparisonItems: new Map(), runRefs: {}, quoteItems: [], ready: false, loadingSources: false, quoteMode: false, previewReportRunId: null, pendingReport: null, sourceRequestRevision: 0, interactionRevision: 0, activeReportRequestId: null };
   let bootPromise = null;
   let initialized = false;
+  let sourcesDirty = false;
+  let sourceRefreshQueued = false;
+  let savedPdfSource = null;
+  let pendingPdfRunId = null;
   const reportEditor = new URLSearchParams(location.search).get('host') === 'optdesk'
     ? window.OptionHelperReportEditor?.createReportEditor({
     root: document,
@@ -95,6 +99,15 @@
     $('reportPreview').src = data.preview_url;
     $('downloadLink').href = data.download_url;
     $('downloadLink').download = data.output?.report || '';
+    const reference = data.report_run_ref;
+    savedPdfSource = null;
+    pendingPdfRunId = null;
+    if (!hostedMode && data.output?.can_save_pdf === true && reference?.task_id && reference?.report_run_id) {
+      savedPdfSource = {task_id: reference.task_id, report_run_id: reference.report_run_id};
+    }
+    const pdfButton = $('convertPdfButton');
+    pdfButton.hidden = !savedPdfSource;
+    pdfButton.disabled = false;
     $('childReports').replaceChildren();
     for (const child of data.output?.children || []) {
       const link = document.createElement('a');
@@ -105,6 +118,39 @@
       $('childReports').append(link);
     }
     notice(data.status === 'partial' ? '报告已生成，部分分析尚未完成。' : '报告已生成');
+  }
+  async function downloadSavedPdf() {
+    const button = $('convertPdfButton');
+    const source = savedPdfSource;
+    if (!source || button.disabled) return;
+    button.disabled = true;
+    notice('正在生成PDF。');
+    try {
+      pendingPdfRunId ||= identifier('pdf');
+      const derive = {source, report_run_id: pendingPdfRunId, format: 'pdf'};
+      const response = await fetch('/api/run', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({derive}),
+      });
+      const data = await response.json();
+      if (savedPdfSource !== source) return;
+      if (!response.ok || !data.ok || !data.download_url) {
+        if (data.error === 'derive_failed') pendingPdfRunId = null;
+        throw new Error(data.message || 'PDF生成失败。');
+      }
+      const link = document.createElement('a');
+      link.href = data.download_url;
+      link.download = data.output?.report || '';
+      link.hidden = true;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      notice('PDF已生成。');
+    } catch (error) {
+      if (savedPdfSource === source) notice(error.message || 'PDF生成失败。', 'error');
+    } finally {
+      if (savedPdfSource === source) button.disabled = false;
+    }
   }
   function restoreSelectionFocus(target) {
     if (!target) return;
@@ -207,8 +253,7 @@
       const source = state.catalog?.sources?.find(source => source.source_id === item.source_id);
       const candidate = source?.candidates?.find(candidate => candidate.candidate_id === item.candidate_id);
       const valid = candidate && source.task_id === item.task_id && Object.entries(item.module_run_refs).every(([module, old]) =>
-        old === null ? !(candidate.module_run_options?.[module]?.length) :
-          (candidate.module_run_options?.[module] || []).some(ref => runRefFields.every(field => ref[field] === old[field])));
+        !old || (candidate.module_run_options?.[module] || []).some(ref => runRefFields.every(field => ref[field] === old[field])));
       if (!valid) { state.comparisonItems.delete(key); lost = true; }
     }
     return lost;
@@ -248,6 +293,9 @@
   function clearSourceState() {
     state.catalog = null; state.source = null; state.selected.clear(); state.comparisonItems.clear(); state.runRefs = {}; state.quoteItems = []; renderSources();
     state.previewReportRunId = null; $('previewPanel').hidden = true; $('reportPreview').removeAttribute('src'); $('downloadLink').removeAttribute('href'); $('editReportButton').hidden = true; $('childReports').innerHTML = '';
+    savedPdfSource = null;
+    pendingPdfRunId = null;
+    $('convertPdfButton').hidden = true;
   }
   function updateControls() {
     const outputType = selectedValue('outputType'); const format = selectedValue('format');
@@ -302,7 +350,16 @@
     const previousId = previous?.source_id || select.value;
     const previousRefs = Object.fromEntries((previous?.candidates || []).map(candidate => [candidate.candidate_id,
       Object.fromEntries(Object.entries(candidate.module_run_options || {}).map(([module, options]) => [module, state.runRefs[candidate.candidate_id]?.[module] || options[0]]))]));
-    const labels = distinctLabels(sources.map(sourceLabel));
+    const labels = distinctLabels(sources.map(source => {
+      const runs = (source.candidates || []).flatMap(candidate =>
+        Object.entries(candidate.module_run_options || {}).flatMap(([module, options]) =>
+          options.map(run => ({module, time: runTime(candidate.run_display?.[run.run_id]?.run_time)}))));
+      const latest = runs.filter(run => run.time !== '时间未记录')
+        .sort((a, b) => b.time.localeCompare(a.time))[0] || runs[0];
+      const detail = latest && [moduleNames[latest.module], latest.time === '时间未记录' ? '' : latest.time.slice(5)]
+        .filter(Boolean).join(' ');
+      return [sourceLabel(source), detail].filter(Boolean).join('，');
+    }));
     const retained = sources.find(source => source.source_id === previousId);
     const missing = Boolean(previous && !retained);
     select.innerHTML = sources.length ? `${missing ? '<option value="">原来源不可用，请重新选择</option>' : ''}${sources.map((source, index) => `<option value="${esc(source.source_id)}" title="${esc(sourceSummary(source))}">${esc(labels[index])}</option>`).join('')}` : '<option value="">暂无可用报告来源</option>';
@@ -417,6 +474,7 @@
   }
   async function loadSources() {
     const revision = ++state.sourceRequestRevision;
+    sourcesDirty = false;
     state.loadingSources = true; updateControls();
     if (!state.activeReportRequestId && $('previewPanel').hidden) notice('正在读取当前任务的分析结果。');
     const task = $('taskFilter').value.trim(); const quote = selectedValue('outputType') === 'quote'; let response; let data;
@@ -431,6 +489,21 @@
     if (lostSelection) notice('原选中的来源或运行已不可用，请重新选择；已完成报告仍可查看。', 'error');
     else if (excludedRuns > 0) notice(`已排除${excludedRuns}条未通过完整性或合同绑定校验的运行，请检查对应计算结果。`, 'error');
     else if (!state.activeReportRequestId && $('previewPanel').hidden) notice((data.sources || []).length ? '选择来源及需要纳入报告的分析内容。' : '当前任务尚无可用的分析结果。');
+  }
+  function refreshChangedSources() {
+    if (!sourcesDirty || sourceRefreshQueued || !initialized || state.loadingSources
+        || state.activeReportRequestId || document.documentElement.dataset.optionhelperModuleActive === 'false') return;
+    sourceRefreshQueued = true;
+    queueMicrotask(() => {
+      sourceRefreshQueued = false;
+      if (!sourcesDirty || state.loadingSources || state.activeReportRequestId
+          || document.documentElement.dataset.optionhelperModuleActive === 'false') return;
+      void loadSources().catch(error => notice(error.message, 'error')).finally(refreshChangedSources);
+    });
+  }
+  function invalidateSources() {
+    sourcesDirty = true;
+    refreshChangedSources();
   }
   function changeOutputType() {
     const quoteMode = selectedValue('outputType') === 'quote';
@@ -456,7 +529,7 @@
       const interactionRevision = state.interactionRevision;
       state.activeReportRequestId = attempt.requestId;
       $('generateButton').disabled = true; notice('正在按已选合同快照整理参考报价。');
-      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报价表生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报价表生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
+      try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报价表生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报价表生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); refreshChangedSources(); }
       return;
     }
     const moduleRunRefs = {};
@@ -496,7 +569,7 @@
     const interactionRevision = state.interactionRevision;
     state.activeReportRequestId = attempt.requestId;
     $('generateButton').disabled = true; notice('正在整理分析结果并生成报告。');
-    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报告生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报告生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); }
+    try { const response = await fetch('/api/run', {method:'POST',headers:{'Content-Type':'application/json','X-OptionHelper-Request-Id':attempt.requestId},body:JSON.stringify({selection})}); const data = await readDeliveryResponse(response, '报告生成失败'); if (!isCurrentReportAttempt(attempt,interactionRevision)) return; settleAttempt(attempt); await showGeneratedReport(data, selection.report_run_id); } catch (error) { if (isCurrentReportAttempt(attempt,interactionRevision)) { notice(error.message || '报告生成失败。', 'error'); if (error.operationFinished) settleAttempt(attempt); } } finally { if (state.activeReportRequestId === attempt.requestId) state.activeReportRequestId = null; updateControls(); refreshChangedSources(); }
   }
   function boot() {
     if (initialized) return Promise.resolve();
@@ -522,15 +595,20 @@
         notice(error.message || '报告来源读取失败，请重试。', 'error');
       } finally {
         bootPromise = null;
+        refreshChangedSources();
       }
     })();
     return bootPromise;
   }
   window.addEventListener('optionhelper.module-host-context', () => { if (!initialized) void boot(); });
+  document.addEventListener('optionhelper:modulevisibility', event => {
+    if (event.detail?.reopened) invalidateSources();
+  });
   $('refreshButton').addEventListener('click', () => { loadSources().catch(error => notice(error.message, 'error')); });
   $('taskFilter').addEventListener('change', () => { markReportInputChanged(); loadSources().catch(error => notice(error.message, 'error')); });
   $('sourceSelect').addEventListener('change', () => { markReportInputChanged(); state.selected.clear(); state.runRefs = {}; renderCandidates(); });
   $('generateButton').addEventListener('click', generate);
+  $('convertPdfButton').addEventListener('click', downloadSavedPdf);
   $('importHtmlButton').hidden = !reportEditor;
   $('importHtmlButton').addEventListener('click', () => $('importHtmlFile').click());
   $('importHtmlFile').addEventListener('change', async event => {
@@ -550,9 +628,14 @@
   $('reportTemplate').addEventListener('change', changeOutputType);
   document.querySelectorAll('input[data-module]').forEach(node => node.addEventListener('change', () => { markReportInputChanged(); updateControls(); }));
   window.addEventListener('message', event => {
-    if (event.origin !== location.origin || event.data?.type !== 'optionhelper.report-editor-open') return;
+    if (event.origin !== location.origin || event.source !== window.parent) return;
     const query = new URLSearchParams(location.search);
     if (query.get('host') !== 'optdesk' || !query.get('bridge_nonce') || event.data?.bridge_nonce !== query.get('bridge_nonce')) return;
+    if (event.data?.type === 'optionhelper.report-sources-changed') {
+      invalidateSources();
+      return;
+    }
+    if (event.data?.type !== 'optionhelper.report-editor-open') return;
     const reportRunId = typeof event.data?.report_run_id === 'string' ? event.data.report_run_id.trim() : '';
     if (reportRunId) void reportEditor?.open(reportRunId);
   });
