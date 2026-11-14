@@ -242,7 +242,8 @@ import { createConversationScroll, createDeferredConversation, shouldDeferConver
 import { createConversationOutline } from "/app/frontend/shared/conversation-outline.js";
 import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-motion.js';
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
-import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, setTaskLocation, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
+import { withoutFactReferences } from "/app/frontend/shared/reply-presentation.js";
 import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity } from "/app/frontend/shared/app.js";
 import { prepareAttachmentFiles } from "/app/frontend/optchat/video-attachments.js";
 import { ATTACHMENT_ACCEPT, attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
@@ -250,6 +251,8 @@ import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { createResearchControls } from "/app/frontend/shared/composer-research-controls.js";
 import { createConversationTransition } from "/app/frontend/shared/conversation-transition.js";
 import { createTransitionScope } from "/app/frontend/shared/transition-scope.js";
+import { createWorkspaceHistory } from "/app/frontend/shared/workspace-history.js";
+import { createWorkspaceModeMotion } from "/app/frontend/shared/workspace-mode-motion.js";
 import { currentTheme, currentThemePreference, onThemeChange } from "/app/frontend/shared/theme.js";
 
 const modules = new Map([["datafetcher", "数据获取"], ["payoffer", "收益结构"], ["pricer", "估值定价"], ["backtester", "历史回测"], ["reporter", "研究报告"]]);
@@ -812,6 +815,9 @@ export async function startWorkspace(initialMode) {
   const defaultInputPlaceholder = input.placeholder;
   let composerQuestionId = "";
   const submit = form.querySelector("button[type=submit]");
+  const modeMotion = createWorkspaceModeMotion({
+    shell, workArea, form, send: submit, toggle: assistantToggle, avatar: assistantAvatar.element,
+  });
   const followupQueue = document.createElement("section");
   followupQueue.className = "composer-followups";
   followupQueue.setAttribute("aria-label", "追加消息队列");
@@ -1424,10 +1430,12 @@ export async function startWorkspace(initialMode) {
     const limit = blockType === "reasoning" ? runtimeReasoningTextLimit : runtimeAssistantTextLimit;
     block.text = appendRuntimeDelta(block.text, delta, limit);
     if (blockType === "reasoning") block.disclosure.update(liveReasoningText(live), true);
-    else block.element.textContent = block.text;
+    else block.element.textContent = withoutFactReferences(block.text, { streaming: true });
     live.article.hidden = false;
   };
-  const liveReasoningText = live => [...live.blocks.values()].filter(block => block.type === "reasoning").map(block => block.text).filter(Boolean).join("\n\n");
+  const liveReasoningText = live => [...live.blocks.values()]
+    .filter(block => block.type === "reasoning")
+    .map(block => withoutFactReferences(block.text, { streaming: true })).filter(Boolean).join("\n\n");
   const settleLiveReasoning = (live, projection = null) => {
     if (!live) return;
     for (const [key, block] of live.blocks) {
@@ -1712,7 +1720,7 @@ export async function startWorkspace(initialMode) {
         if (block && completedText && !block.text) {
           block.text = completedText;
           if (block.type === "reasoning") block.disclosure.update(liveReasoningText(playback.liveAssistant), false);
-          else block.element.textContent = block.text;
+          else block.element.textContent = withoutFactReferences(block.text);
           playback.liveAssistant.article.hidden = false;
         }
         if (projection.blockType === "reasoning") settleLiveReasoning(playback.liveAssistant, projection);
@@ -2402,6 +2410,7 @@ export async function startWorkspace(initialMode) {
   };
 
   const setAssistantOpen = (open, { focus = false, persist = true } = {}) => {
+    if (focus) modeMotion.stop();
     assistantOpen = Boolean(open);
     const visibleInDesk = currentMode === "desk" && assistantOpen;
     const revealed = visibleInDesk && deferredConversation.reveal(currentTask?.task_id);
@@ -2426,6 +2435,7 @@ export async function startWorkspace(initialMode) {
   };
 
   assistantDesktopQuery.addEventListener("change", () => {
+    modeMotion.stop();
     setAssistantOpen(assistantOpen, { persist: false });
     syncComposerClearance();
   });
@@ -2628,7 +2638,10 @@ export async function startWorkspace(initialMode) {
     syncComposerClearance();
   };
 
-  const modePath = (mode) => mode === "desk" ? "/optdesk" : "/optchat";
+  const workspaceHistory = createWorkspaceHistory();
+  const setTaskLocation = (module = currentModule) => workspaceHistory.replace({
+    mode: currentMode, taskId: currentTask?.task_id, module,
+  });
   const syncReportSurface = (mode) => {
     const desk = mode === "desk";
     const reportToggle = shell.querySelector("[data-report-toggle]");
@@ -2682,6 +2695,7 @@ export async function startWorkspace(initialMode) {
     restoringScroll = true;
     const previousMode = currentMode;
     const enteringDeskFromChat = previousMode === "chat" && nextMode === "desk";
+    const movingFrom = previousMode !== nextMode ? modeMotion.capture(previousMode) : null;
     shell.dataset.assistantSwitching = "false";
     if (enteringDeskFromChat) {
       // Chat renders this same region as its in-flow composer. Desk turns it
@@ -2705,12 +2719,8 @@ export async function startWorkspace(initialMode) {
     if (nextMode !== "desk") activateFrame(null);
     document.querySelectorAll("button[data-mode]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.mode === currentMode)));
     placeConversation();
-    if (updateHistory) {
-      const next = new URL(modePath(currentMode), location.origin);
-      if (currentTask?.task_id) next.searchParams.set("task", currentTask.task_id);
-      if (currentMode === "desk" && currentModule) next.searchParams.set("module", currentModule);
-      history.replaceState({ mode: currentMode, task: currentTask?.task_id || "" }, "", `${next.pathname}${next.search}`);
-    }
+    if (movingFrom && modeMotion.play(movingFrom, nextMode)) shell.dataset.assistantSwitching = "false";
+    if (updateHistory) setTaskLocation();
     if (nextMode === "desk" && currentTask) await mountModule(currentModule, false);
     if (!isCurrentTransition()) return;
     const desiredScrollTop = Number(currentMode === "desk" ? state.deskScrollTop : state.chatScrollTop) || 0;
@@ -2820,10 +2830,10 @@ export async function startWorkspace(initialMode) {
   }
 
   async function loadTasks() {
-    const { tasks } = await request("/api/tasks");
+    const { tasks } = await request("/api/tasks?view=summary");
     taskActivitySummaries = tasks;
     renderLoadedTasks(tasks);
-    // Full history may take longer than a calculation; refresh its live state.
+    // A run can finish while the task list is in flight.
     void loadTaskActivity().catch(() => {});
     return tasks;
   }
@@ -2873,7 +2883,7 @@ export async function startWorkspace(initialMode) {
     return tasks;
   }
 
-  function resetTaskSelection() {
+  function resetTaskSelection({ updateLocation = true } = {}) {
     conversationScroll.reset();
     renderComposerQuestion(null);
     currentTask = null;
@@ -2891,10 +2901,7 @@ export async function startWorkspace(initialMode) {
     renderTaskOperations([], "");
     chatSurface.classList.add("chat-surface--empty");
     mount?.replaceChildren(createModuleStart());
-    const next = new URL(location.href);
-    next.searchParams.delete("task");
-    next.searchParams.delete("module");
-    history.replaceState(null, "", next);
+    if (updateLocation) setTaskLocation("");
     void restoreAttachmentDrafts();
   }
 
@@ -3168,6 +3175,7 @@ export async function startWorkspace(initialMode) {
     deferredConversation.reset();
     renderComposerQuestion(task);
     renderMessages(stream, task?.messages || [], "可直接输入任务要求，或选择一个研究起点。", {
+      conversationId: task?.task_id,
       questionInComposer: true,
       onAttachmentOpen: (reference) => openStoredAttachment(reference, task.task_id),
       onQuestionAnswer: (answer) => {
@@ -3182,11 +3190,11 @@ export async function startWorkspace(initialMode) {
   }
 
   async function refreshReportLibrary(taskId = currentTask?.task_id) {
-    if (!taskId || taskId !== currentTask?.task_id) return false;
+    if (!taskId || taskId !== currentTask?.task_id || shell.dataset.reportOpen !== "true") return false;
     const selectionRevision = taskSelectionRevision;
     const requestRevision = ++reportListRequestRevision;
     const { reports: reportRuns } = await request(`/api/tasks/${encodeURIComponent(taskId)}/reports`);
-    if (taskId !== currentTask?.task_id || selectionRevision !== taskSelectionRevision
+    if (taskId !== currentTask?.task_id || shell.dataset.reportOpen !== "true" || selectionRevision !== taskSelectionRevision
         || requestRevision !== reportListRequestRevision) return false;
     renderReports(reports, reportRuns || []);
     decorateReportLibrary(reports, reportRuns || [], reportRunId => {
@@ -3195,7 +3203,12 @@ export async function startWorkspace(initialMode) {
     return true;
   }
 
-  async function selectTask(taskId, updateLocation = true, { restoreStartup = false } = {}) {
+  function readTaskSnapshot(taskId) {
+    const readStartedAt = performance.now();
+    return request(`/api/tasks/${encodeURIComponent(taskId)}`).then(({ task }) => ({ task, readStartedAt }));
+  }
+
+  async function selectTask(taskId, updateLocation = true, { restoreStartup = false, taskRead = null } = {}) {
     if (!restoreStartup) ++taskInteractionRevision;
     const readingPosition = currentTask?.task_id === taskId && submit.dataset.sending === "true"
       && stream.scrollHeight - stream.clientHeight - stream.scrollTop >= 72 ? stream.scrollTop : null;
@@ -3206,6 +3219,7 @@ export async function startWorkspace(initialMode) {
     // Release it before loading another task so its frames cannot restore stale state.
     activeModeTransition?.dispose();
     activeModeTransition = null;
+    modeMotion.stop();
     modeSwitchRevision += 1;
     restoringScroll = false;
     shell.dataset.switching = "false";
@@ -3224,8 +3238,7 @@ export async function startWorkspace(initialMode) {
     const departure = animateTask ? taskTransition.exit() : Promise.resolve(true);
     let committed = false;
     try {
-      const readStartedAt = performance.now();
-      const [{ task }] = await Promise.all([request(`/api/tasks/${encodeURIComponent(taskId)}`), departure]);
+      const [{ task, readStartedAt }] = await Promise.all([taskRead || readTaskSnapshot(taskId), departure]);
       if (!isCurrentSelection() || (restoreStartup && !canRestoreStartup())) return null;
       if (currentTask?.task_id && currentTask.task_id !== task.task_id) {
         disposeModuleFrames();
@@ -3252,11 +3265,11 @@ export async function startWorkspace(initialMode) {
       if (readingPosition !== null) stream.scrollTop = readingPosition;
       if (animateTask) taskTransition.enter();
       committed = true;
-      if (updateLocation) setTaskLocation(task.task_id, { module: currentMode === "desk" ? currentModule : "" });
+      if (updateLocation) setTaskLocation();
       renderLoadedTasks(taskActivitySummaries);
       renderReports(reports, []);
       // These independent reads already guard their own task/revision on completion.
-      const reportsReady = refreshReportLibrary(taskId).catch(() => {});
+      void refreshReportLibrary(taskId).catch(() => {});
       const operationsReady = loadCurrentTaskOperations(taskId).catch(() => {
         if (isCurrentSelection()) renderTaskOperations([], taskId);
       });
@@ -3266,7 +3279,7 @@ export async function startWorkspace(initialMode) {
       const draftsReady = restoreAttachmentDrafts().then(() => {
         if (isCurrentSelection()) form.inert = false;
       });
-      await Promise.all([reportsReady, operationsReady, tasksReady, moduleReady, draftsReady]);
+      await Promise.all([operationsReady, tasksReady, moduleReady, draftsReady]);
       if (!isCurrentSelection()) return null;
       return task;
     } finally {
@@ -3495,7 +3508,7 @@ export async function startWorkspace(initialMode) {
     moduleMountRevision += 1;
     currentModule = moduleName;
     setActiveModule(moduleName);
-    if (updateLocation) setTaskLocation(taskId, { module: moduleName });
+    if (updateLocation) setTaskLocation();
 
     let frame = moduleFrames.get(moduleName);
     if (forceRetry && frame?.dataset.loadError === "true") {
@@ -3568,6 +3581,15 @@ export async function startWorkspace(initialMode) {
       void loadTaskActivity().catch(() => {});
       return;
     }
+    if (event.data?.type === "optionhelper.module-result-saved") {
+      if (!["payoffer", "pricer", "backtester"].includes(moduleName)
+          || event.data.task_id !== currentTask?.task_id) return;
+      const reporter = moduleFrames.get("reporter");
+      reporter?.contentWindow?.postMessage({
+        type: "optionhelper.report-sources-changed", bridge_nonce: reporter.dataset.bridgeNonce,
+      }, location.origin);
+      return;
+    }
     if (event.data?.type === "optionhelper.report-saved") {
       if (moduleName !== "reporter" || event.data.task_id !== currentTask?.task_id
           || typeof event.data.report_run_id !== "string" || !event.data.report_run_id.trim()) return;
@@ -3621,7 +3643,10 @@ export async function startWorkspace(initialMode) {
     deliverContext(moduleName);
     deliverPendingReportEditor();
   });
-  onThemeChange(() => broadcastModuleTheme());
+  onThemeChange(() => {
+    modeMotion.stop();
+    broadcastModuleTheme();
+  });
 
   document.addEventListener("click", (event) => {
     if (!event.target.closest?.("[data-report-toggle]")) return;
@@ -3658,13 +3683,19 @@ export async function startWorkspace(initialMode) {
   syncComposerClearance();
   tabs.addEventListener("scroll", () => syncModuleTabIndicator(false), { passive: true });
   window.addEventListener("resize", () => {
+    modeMotion.stop();
     syncModuleTabIndicator(false);
     syncComposerClearance();
   }, { passive: true });
+  form.addEventListener("focusin", modeMotion.stop);
   assistantToggle.addEventListener("pointerenter", () => assistantAvatar.interact());
   assistantToggle.addEventListener("focus", () => assistantAvatar.interact());
   assistantToggle.addEventListener("click", () => setAssistantOpen(!assistantOpen, { focus: true }));
-  assistantClose.addEventListener("click", () => { setAssistantOpen(false); assistantToggle.focus(); });
+  assistantClose.addEventListener("click", () => {
+    modeMotion.stop();
+    setAssistantOpen(false);
+    assistantToggle.focus();
+  });
   // Resize from the upper-left corner while keeping the bottom-right dock fixed.
   const resizeAssistant = (width, height) => {
     const bounds = assistantPanel.getBoundingClientRect();
@@ -4055,6 +4086,8 @@ export async function startWorkspace(initialMode) {
   }));
 
   window.addEventListener("pagehide", () => {
+    modeMotion.destroy();
+    workspaceHistory.cancelPending();
     taskTransition.cancel();
     conversationOutline.destroy();
     assistantAvatar.destroy();
@@ -4063,14 +4096,22 @@ export async function startWorkspace(initialMode) {
     saveTransient();
   }, { once: true });
   window.addEventListener("popstate", async () => {
+    workspaceHistory.cancelPending();
     const nextMode = location.pathname.startsWith("/optdesk") ? "desk" : "chat";
     if (nextMode === "desk" && shell.dataset.hasDesk !== "true") {
       location.replace(`/optchat${location.search}`);
       return;
     }
-    await applyMode(nextMode, { updateHistory: false });
     const requested = taskIdFromLocation();
+    const requestedModule = new URLSearchParams(location.search).get("module");
+    if (modules.has(requestedModule)) currentModule = requestedModule;
+    const taskRevision = taskInteractionRevision;
+    const transition = applyMode(nextMode, { updateHistory: false });
+    const modeRevision = modeInteractionRevision;
+    await transition;
+    if (taskRevision !== taskInteractionRevision || modeRevision !== modeInteractionRevision) return;
     if (requested && requested !== currentTask?.task_id) await selectTask(requested, false).catch(() => {});
+    if (!requested && currentTask) resetTaskSelection({ updateLocation: false });
   });
 
   const session = await initializeWorkspace(initialMode, { onModeChange: async (mode) => {
@@ -4095,11 +4136,21 @@ export async function startWorkspace(initialMode) {
     canChoosePreset: session.capabilities.some(value => ["settings.model.local.write", "settings.model.write"].includes(value)),
     onError: error => showWorkspaceStatus(error.message, true),
   });
+  const startupTaskId = currentMode === "desk" && canRestoreStartup() ? taskIdFromLocation() : null;
+  const startupTaskRead = startupTaskId ? readTaskSnapshot(startupTaskId) : null;
+  // Read an explicitly requested Desk task alongside the rail, then use the
+  // normal selection guards before restoring it to the workspace.
+  void startupTaskRead?.catch(() => {});
   const initialTaskReady = loadTasks().then(async () => {
     // The loading fallback can already have let the user choose a task or mode.
     if (!canRestoreStartup()) return;
     const requested = taskIdFromLocation();
-    if (requested) await selectTask(requested, false, { restoreStartup: true }).catch(() => {});
+    if (requested) {
+      await selectTask(requested, false, {
+        restoreStartup: true,
+        taskRead: requested === startupTaskId ? startupTaskRead : null,
+      }).catch(() => {});
+    }
   });
   await Promise.all([
     researchControls.refresh().catch(() => researchControls.hide()),
@@ -4144,6 +4195,7 @@ export async function startWorkspace(initialMode) {
   });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") refreshModels();
+    else modeMotion.stop();
   });
   requestAnimationFrame(() => requestAnimationFrame(revealWorkspace));
 }
