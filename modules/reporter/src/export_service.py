@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from datetime import UTC, datetime
 from hashlib import sha256
 import os
@@ -608,6 +609,27 @@ def _write_reissued_contents(
     }
 
 
+def _existing_reissued_report(target_root: Path, target_request: ReportRequest,
+                             source_request: ReportRequest, source_unit: Mapping[str, Any]) -> dict[str, Any]:
+    if target_root.is_symlink():
+        raise ReporterError("报告转换目录不能为符号链接")
+    validation = validate_report_run_directory(target_root, expected_request=target_request.to_dict())
+    origin = validation["manifest"].get("derived_from")
+    if (not isinstance(origin, Mapping) or origin.get("task_id") != source_request.task_id
+        or origin.get("report_run_id") != source_request.report_run_id or validation["unit"] != source_unit):
+        raise ReporterError("转换交付标识已被其他报告使用")
+    return {
+        "directory": str(target_root),
+        "status": validation["delivery_status"],
+        "report_unit": "report-unit.json",
+        "designer_input": "designer-input.json",
+        "design_brief": "design-brief.json",
+        "report": validation["rendered_path"].name,
+        "manifest": "run_manifest.json",
+        "children": list(validation["manifest"]["children"]),
+    }
+
+
 def reissue_saved_report(
     *,
     output_root: Path,
@@ -657,7 +679,7 @@ def reissue_saved_report(
     target_request = ReportRequest.from_mapping(target_request_data)
     target_root = output_root.resolve() / target_request.task_id / target_request.report_run_id
     if target_root.exists():
-        raise ReporterError(f"ReportRun输出目录已存在，拒绝覆盖：{target_root}")
+        return _existing_reissued_report(target_root, target_request, source_request, source_validation["unit"])
     target_root.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{target_request.report_run_id}-", dir=target_root.parent))
     try:
@@ -689,10 +711,15 @@ def reissue_saved_report(
             children.append({"candidate_id": candidate_id, "directory": child_stage.name, **child_outcome})
         manifest["children"] = children
         write_json(stage / "run_manifest.json", manifest)
-        os.replace(stage, target_root)
-    except Exception:
-        shutil.rmtree(stage, ignore_errors=True)
-        raise
+        try:
+            os.replace(stage, target_root)
+        except OSError as error:
+            if error.errno not in {errno.ENOTEMPTY, errno.EEXIST} or not target_root.is_dir():
+                raise
+            return _existing_reissued_report(target_root, target_request, source_request, source_validation["unit"])
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
     return {
         "directory": str(target_root),
         **outcome,
