@@ -183,8 +183,8 @@ def report_source_matches_recommendation(source: Mapping[str, Any], current: Map
     from modules.recommender.interaction import confirmed_term_overrides
     inputs = current.get("current_inputs", {})
     overrides = dict(inputs.get("term_overrides", {}))
-    confirmed = {**confirmed_term_overrides(inputs.get("confirmed_constraints", {})),
-                 **confirmed_term_overrides(confirmed_constraints or {})}
+    confirmed = {**confirmed_term_overrides(inputs.get("confirmed_constraints", {}), product_id=current.get("product_id")),
+                 **confirmed_term_overrides(confirmed_constraints or {}, product_id=current.get("product_id"))}
     terms = contract.get("terms", {})
     overrides.update({key: value for key, value in confirmed.items() if key in terms})
     return all(terms.get(key) == value for key, value in overrides.items())
