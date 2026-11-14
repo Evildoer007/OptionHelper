@@ -253,6 +253,10 @@ def _card_candidate_sections(
         reason_points.insert(0, recommendation.get("reason"))
     reason = "".join(f"<li>{rich_text(item)}</li>" for item in reason_points[:3] if text(item))
     terms = _term_rows(facts)
+    payoff = as_dict(facts.get("payoff"))
+    break_even = payoff.get("expiry_break_even_ratio")
+    if text(payoff.get("status")).lower() in {"ready", "partial"} and type(break_even) in (int, float):
+        terms.append({"label": "到期盈亏平衡", "value": display_text(break_even, "percent"), "note": "占期初参考价"})
     pricing_status = text(pricing.get("status")).lower()
     backtest_status = text(backtest.get("status")).lower()
     pricing_rows = _card_pricing_rows(pricing) if pricing_status in {"ready", "partial"} else []
@@ -576,6 +580,12 @@ def _aggregate_report(
         for item in candidates
     )
     preferred = next((item for item in candidates if item.get("is_primary")), None)
+    loss_bounds = [as_dict(as_dict(item.get("facts")).get("payoff")).get("expiry_loss_bound") for item in candidates]
+    reasons = []
+    if (preferred is candidates[0] and all(type(value) in (int, float) for value in loss_bounds)
+        and loss_bounds == sorted(loss_bounds) and loss_bounds[0] < loss_bounds[-1]):
+        order = "、".join(f"{text(item.get('title'))}{value:.2%}" for item, value in zip(candidates, loss_bounds))
+        reasons.append(f"到期最大亏损从小到大为{order}。")
     underlyings = list(dict.fromkeys(text(item.get("underlyings")) for item in candidates if text(item.get("underlyings"))))
     risk_items: list[str] = []
     term_rows: list[list[Mapping[str, Any]]] = []
@@ -627,7 +637,11 @@ def _aggregate_report(
             for item in (as_dict(raw) for raw in as_list(payoff.get("scenarios")))
             if payoff_status in {"ready", "partial"} and (text(item.get("title")) or text(item.get("rule")))
         ]
-        payoff_rows.append([{"label": "模块状态", "value": _module_status(payoff)}, *payoff_facts])
+        payoff_summary = [{"label": "模块状态", "value": _module_status(payoff)}]
+        break_even = payoff.get("expiry_break_even_ratio")
+        if payoff_status in {"ready", "partial"} and type(break_even) in (int, float):
+            payoff_summary.append({"label": "到期盈亏平衡（占期初参考价）", "value": break_even, "value_format": "percent"})
+        payoff_rows.append([*payoff_summary, *payoff_facts])
         if payoff_status in {"ready", "partial"} and text(payoff.get("report_svg_path")):
             payoff_figures.append({"label": text(candidate.get("label")), "path": payoff.get("report_svg_path")})
         if payoff_status in {"ready", "partial"} and (
@@ -648,9 +662,9 @@ def _aggregate_report(
         "sections": list(SECTION_ORDER),
         "conclusion": {
             "has_recommendation": has_recommendation,
-            "structure_name": f'{len(candidates)}个候选结构对比',
+            "structure_name": text(preferred.get("title")) if preferred else f'{len(candidates)}个候选结构对比',
             "underlyings": "、".join(underlyings),
-            "reasons": [f'{"按冻结排名" if has_recommendation else "按所选顺序"}列示{len(candidates)}个候选，合同、估值和回测事实分别绑定。'] + ([f'首选方案为{text(preferred.get("label"))}：{text(preferred.get("title"))}。'] if preferred else []),
+            "reasons": reasons,
             "risk_summary": risk_items[:2],
         },
         "recommendation": {
