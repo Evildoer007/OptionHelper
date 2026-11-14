@@ -964,6 +964,12 @@ function renderChoiceLabel(node, option) {
       && (moduleName === "payoffer" || moduleName === "pricer" || moduleName === "backtester")
       && result.module_run_ref?.run_id
     ) {
+      window.parent.postMessage({
+        type: "optionhelper.module-result-saved",
+        module: moduleName,
+        task_id: requestContext?.task_id,
+        bridge_nonce: bridgeNonce,
+      }, location.origin);
       resetHostContext();
       requestHostContext("run-completed");
     }
