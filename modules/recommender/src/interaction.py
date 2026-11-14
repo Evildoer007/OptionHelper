@@ -8,13 +8,22 @@ from __future__ import annotations
 
 import re
 from decimal import Decimal, InvalidOperation
-from datetime import date
+from datetime import date, datetime
 from collections.abc import Mapping, Sequence
 from typing import Any
+from zoneinfo import ZoneInfo
+
+from runtime.knowledger.search import mentioned_product_ids, named_comparison_product_ids, product_names
 
 
 _UNDERLYING = re.compile(r"(?<![A-Za-z0-9])(?P<code>\d{6})\s*\.?\s*(?P<exchange>SH|SZ)(?![A-Za-z0-9])", re.IGNORECASE)
-_HORIZON = re.compile(r"(?<![\d.\-])(?P<number>\d+(?:\.\d+)?|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|月|年|个?季度|季度|季)")
+_HORIZON = re.compile(r"(?<![\d.\-])(?P<number>\d+(?:\.\d+)?|[一二三四五六七八九十两]+)\s*(?P<unit>个?月|年|个?季度|季)")
+_DATE_MENTION = re.compile(
+    r"(?<!\d)(?:(?P<year>\d{4})[-/](?P<month>\d{1,2})[-/](?P<day>\d{1,2})(?!\d)"
+    r"|(?:(?P<ch_year>\d{4})年\s*)?(?P<ch_month>\d{1,2})月\s*(?P<ch_day>\d{1,2})\s*(?:日|号))"
+)
+_VALUATION_DATE_BEFORE = re.compile(r"(?:估值|定价|基准)(?:基准|日(?:期)?|时点)?\s*(?:用|采用|取|改为|为|是|[=:：])?\s*$")
+_VALUATION_DATE_AFTER = re.compile(r"\s*(?:\d{6}\s*\.?\s*(?:SH|SZ)\s*)?(?:的)?\s*(?:(?:iFinD|Tinyshare)\s*)?(?:收盘(?:后)?|估值|定价)", re.I)
 _YEAR_AND_HALF = re.compile(r"(?P<number>\d+|[一二三四五六七八九十两]+)\s*年半")
 _LOSS = re.compile(r"(?:最大(?:可承受|可接受)?(?:亏损|损失|回撤)?|最大亏损?|亏损(?:不超过|上限为|控制在|改为)?|回撤(?:不超过|上限为|控制在|改为)?|最大(?:可承受|可接受)?(?:亏损|损失|回撤)?改为)\s*(?P<value>\d+(?:\.\d+)?)\s*[%％]")
 _PATH_NUMBER = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\s*(?:万|千|[kKwW])?"
@@ -58,8 +67,11 @@ _TERM_FIELD = (
     r"(?:执行价|执行水平|行权价|票息|票面收益|参与率|权利金|期权费|"
     r"敲出|敲入|气囊障碍|结算|行权方式|(?<![a-z0-9])k(?=\d|[^a-z0-9]|$))"
 )
-_TERM_ACTION = r"(?:改|调|调整|设|设置|变|替换)"
-_TERM_REJECTION = r"(?:不要|不用|无需|不需要|别|拒绝|不接受|不(?:改|调|调整|设|设置|变|替换))"
+_TERM_ACTION = r"(?:改|调(?!用|取|研)|设|变|替换)"
+_TERM_REJECTION = rf"(?:不要|不用|无需|不需要|(?<!分)别|拒绝|不接受|不{_TERM_ACTION})"
+_PRODUCT_ID = re.compile(r"\d{1,2}\.\d{1,2}")
+_MARKET_ASSET_ID = re.compile(r"data-[a-zA-Z0-9_-]{1,180}")
+_PRICING_ASSUMPTIONS = ("risk_free_rate", "dividend_yield", "hv_window", "model_method", "valuation_date")
 
 
 def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -113,6 +125,22 @@ def normalize_confirmed_constraints(value: Mapping[str, Any] | None) -> dict[str
     term_overrides = _normalize_term_overrides(source.get("term_overrides"))
     if term_overrides:
         result["term_overrides"] = term_overrides
+    scoped_terms = source.get("product_term_overrides")
+    if isinstance(scoped_terms, Mapping):
+        scoped_terms = {key: terms for key, value in scoped_terms.items()
+                        if isinstance(key, str) and _PRODUCT_ID.fullmatch(key)
+                        and (terms := _normalize_term_overrides(value))}
+        if scoped_terms:
+            result["product_term_overrides"] = scoped_terms
+    comparison = source.get("comparison_product_ids")
+    if isinstance(comparison, (list, tuple)):
+        ids = tuple(dict.fromkeys(item for item in comparison
+                                  if isinstance(item, str) and _PRODUCT_ID.fullmatch(item)))
+        if len(ids) > 1:
+            result["comparison_product_ids"] = list(ids)
+    market_asset_id = source.get("market_data_asset_id")
+    if isinstance(market_asset_id, str) and _MARKET_ASSET_ID.fullmatch(market_asset_id):
+        result["market_data_asset_id"] = market_asset_id
     valuation_date = source.get("valuation_date")
     if isinstance(valuation_date, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", valuation_date):
         try:
@@ -182,15 +210,38 @@ def question_covered_by_confirmed_terms(question: str, constraints: Mapping[str,
     return covered > 0
 
 
-def confirmed_term_overrides(constraints: Mapping[str, Any]) -> dict[str, Any]:
-    """Translate the confirmed investment horizon to the contract year fraction."""
+def confirmed_term_overrides(constraints: Mapping[str, Any], *, product_id=None, registry=None) -> dict[str, Any]:
+    """Resolve confirmed terms against the vocabulary of the receiving contract."""
     normalized = normalize_confirmed_constraints(constraints)
     result: dict[str, Any] = {}
     horizon = re.fullmatch(r"(\d+(?:\.\d+)?)(年|个月)", normalized.get("horizon", ""))
     if horizon:
         result["T"] = float(horizon[1]) / (12 if horizon[2] == "个月" else 1)
     result.update(normalized.get("term_overrides", {}))
-    return result
+    if product_id is None:
+        return result
+    from runtime.contracts.contract_api import ContractResolutionError, overridable_term_keys
+    try:
+        allowed = overridable_term_keys(product_id, registry)
+    except ContractResolutionError:
+        if registry is not None:
+            raise
+        # Standalone Recommender ports can supply their own catalogue.
+        allowed = result.keys() | normalized.get("product_term_overrides", {}).get(product_id, {}).keys()
+    specific = normalized.get("product_term_overrides", {}).get(product_id, {})
+    return {key: value for key, value in {**result, **specific}.items() if key in allowed}
+
+
+def confirmed_pricing_assumptions(constraints: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = normalize_confirmed_constraints(constraints)
+    return {key: normalized[key] for key in _PRICING_ASSUMPTIONS if key in normalized}
+
+
+def requests_ascending_expiry_loss(text: str) -> bool:
+    loss = r"(?:(?:到期|合同)(?:结算)?(?:最大(?:亏损|损失)|最多亏(?:多少|损)?)|最大(?:亏损|损失))"
+    order = r"从小到大|由小到大|升序|最(?:低|小|少)|更(?:低|小|少)|排(?:个)?序|排一下|为先|优先"
+    return bool(re.search(rf"{loss}[^。；;，,]{{0,20}}(?:{order})", text)
+                or re.search(rf"(?:按|按照|依据|根据){loss}[^。；;，,]{{0,12}}(?:来推荐|排序)", text))
 
 
 def extract_confirmed_constraints(messages: Sequence[object]) -> dict[str, Any]:
@@ -242,6 +293,7 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
     if extracted.get("underlying") and extracted.get("underlying") != existing.get("underlying"):
         existing.pop("holding_notional", None)
         existing.pop("reference_notional", None)
+        existing.pop("market_data_asset_id", None)
     if "reference_notional" in extracted and "holding_notional" not in extracted:
         existing.pop("holding_notional", None)
     value = dict(extracted)
@@ -249,6 +301,7 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
         existing.pop("max_loss_amount", None)
     negated_outputs = set(value.pop("_negated_outputs", ()))
     term_operations = value.pop("_term_override_operations", ())
+    scoped_operations = value.pop("_scoped_term_operations", {})
     previous_view = str(existing.get("market_view", ""))
     current_view = str(value.get("market_view", ""))
     if previous_view:
@@ -279,20 +332,27 @@ def _merge_user_constraints(existing: dict[str, Any], extracted: Mapping[str, An
     if "term_overrides" in value:
         value["term_overrides"] = {**existing.get("term_overrides", {}), **value["term_overrides"]}
     existing.update(value)
-    if isinstance(term_operations, Sequence) and not isinstance(term_operations, (str, bytes)):
-        merged_overrides = dict(existing.get("term_overrides", {}))
-        for operation in term_operations:
-            if not isinstance(operation, Sequence) or isinstance(operation, (str, bytes)) or len(operation) < 2:
-                continue
-            action, key = str(operation[0]), str(operation[1])
-            if action == "remove":
-                merged_overrides.pop(key, None)
-            elif action == "set" and len(operation) == 3:
-                merged_overrides[key] = operation[2]
+    if term_operations:
+        merged_overrides = _apply_term_operations(existing.get("term_overrides", {}), term_operations)
         if merged_overrides:
             existing["term_overrides"] = merged_overrides
         else:
             existing.pop("term_overrides", None)
+    if scoped_operations:
+        scopes = dict(existing.get("product_term_overrides", {}))
+        for product_id, operations in scoped_operations.items():
+            scopes[product_id] = _apply_term_operations(scopes.get(product_id, {}), operations)
+        existing["product_term_overrides"] = scopes
+
+
+def _apply_term_operations(existing, operations):
+    result = dict(existing)
+    for action, key, *value in operations:
+        if action == "remove":
+            result.pop(key, None)
+        else:
+            result[key] = value[0]
+    return result
 
 
 def _view_parts(value: str) -> tuple[str, str]:
@@ -356,25 +416,31 @@ def _extract_text(text: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
     # Only explicit, labelled numerical assumptions become execution inputs.
     # Percentages are ratios; a bare nonzero rate is deliberately ambiguous.
-    for key, label in (("risk_free_rate", r"无风险利率|risk_free_rate"),
-                       ("dividend_yield", r"股息率|分红率|dividend_yield")):
+    for key, label in (("risk_free_rate", r"(?:无风险)?利率|risk_free_rate"),
+                       ("dividend_yield", r"股息(?:率)?|分红率|dividend_yield")):
         matches = list(re.finditer(
-            rf"(?:{label})\s*(?:改为|设为|设置为|取|为|是|=|：|:)?\s*"
-            r"(?P<number>-?\d+(?:\.\d+)?)\s*(?P<percent>[%％])?(?![\d.])", text, re.I))
+            rf"(?:{label})(?:(?:和|与|及)费用)?\s*(?:都)?(?:改为|设为|设置为|按|取|为|是|=|：|:)?\s*"
+            r"(?P<number>-?\d+(?:\.\d+)?|零)\s*(?P<percent>[%％])?(?![\d.])", text, re.I))
         matches = [match for match in matches if not re.search(
             r"(?:不要|不用|不采用|并非|不是|禁止)\s*$", text[max(0, match.start()-6):match.start()])]
         if matches:
             match = matches[-1]
-            number = Decimal(match['number'])
+            number = Decimal('0' if match['number'] == '零' else match['number'])
             if match['percent'] or number == 0:
                 result[key] = float(number / (100 if match['percent'] else 1))
-    windows = list(re.finditer(r"(?<!\d)(\d{1,4})\s*(?:个交易日|交易日|日)\s*(?:历史)?波动率", text))
+    windows = list(re.finditer(
+        r"(?<!\d)(\d{1,4})\s*(?:(?:个?交易日|日)\s*(?:的)?(?:历史)?波动率"
+        r"|(?:个?交易日的?|个日|日)\s*(?:日)?(?:对数)?收益率(?=[^。；;]{0,24}(?:波动|年化))"
+        r"|(?:个?交易日|日)\s*算(?:历史)?波动率)", text))
     windows = [match for match in windows if not re.search(
         r"(?:不要|不用|不采用|并非|不是|禁止)\s*$", text[max(0, match.start()-6):match.start()])]
     if windows:
         result['hv_window'] = int(windows[-1][1])
+    asset_ids = re.findall(r"(?<![\w])(?:market_data_asset_id|data_asset_id)\s*[=＝:：]\s*(data-[a-zA-Z0-9_-]+)", text)
+    if asset_ids:
+        result["market_data_asset_id"] = asset_ids[-1]
     methods = list(re.finditer(
-        r'(?:使用|采用|用|改为)\s*(解析(?:模型|法|定价)|蒙特卡洛|monte[\s_]*carlo|mc(?=\s*(?:=|路径|\d)))'
+        r'(?:使用|采用|用|做|改为)?\s*(解析(?:模型|法|定价|估值)|(?:蒙特卡洛|monte[\s_]*carlo|mc)(?=\s*(?:=|路径|\d)))'
         r'|((?:mc|monte[\s_]*carlo|蒙特卡洛)(?:模拟)?(?:路径(?:数)?|样本数)?\s*(?:为|是|=|：|:)?\s*\d+)', text, re.I))
     methods = [match for match in methods if not re.search(
         r'(?:不|无需|禁止|不要)\s*$', text[max(0, match.start()-4):match.start()])]
@@ -384,15 +450,15 @@ def _extract_text(text: str) -> dict[str, Any]:
     match = _UNDERLYING.search(text.upper())
     if match:
         result["underlying"] = f"{match.group('code')}.{match.group('exchange').upper()}"
+    comparison_ids = named_comparison_product_ids(text)
+    if comparison_ids:
+        result["comparison_product_ids"] = list(comparison_ids)
     horizon = _normalize_horizon(text)
     if horizon:
         result["horizon"] = horizon
-    dates = tuple(re.finditer(r"(?:估值日|定价日)(?:期)?\s*(?:改为|为|是|=|：|:)?\s*(\d{4}-\d{2}-\d{2})(?!\d)", text))
-    if dates:
-        try:
-            result["valuation_date"] = date.fromisoformat(dates[-1].group(1)).isoformat()
-        except ValueError:
-            pass
+    valuation_date = _valuation_date_from_text(text)
+    if valuation_date is not None:
+        result["valuation_date"] = valuation_date
     market_view = _normalize_market_view(text)
     if market_view:
         result["market_view"] = market_view
@@ -493,14 +559,19 @@ def _extract_text(text: str) -> dict[str, Any]:
         backtest_config["complete_tenor"] = True
     if backtest_config:
         result["backtest_config"] = backtest_config
-    # Explicit formula-style assignments are user constraints too. Keep only
-    # unambiguous values; the binding layer intersects keys with each product.
-    assignments = _explicit_term_assignments(text)
+    common_text, product_texts = _product_term_sections(text)
+    assignments = _explicit_term_assignments(common_text)
     if assignments:
         result["term_overrides"] = assignments
-    term_operations = _term_override_operations(text)
+    term_operations = _term_override_operations(common_text)
     if term_operations:
         result["_term_override_operations"] = term_operations
+    if product_texts:
+        result["_scoped_term_operations"] = {
+            product_id: (*_term_override_operations(section, product_id=product_id),
+                         *(("set", key, value) for key, value in _explicit_term_assignments(section).items()))
+            for product_id, section in product_texts.items()
+        }
     path_count = _path_count_from_text(text)
     if path_count is not None:
         result["path_count"] = path_count
@@ -565,7 +636,7 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
     if not isinstance(value, Mapping):
         return {}
     allowed_numeric = {
-        "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
+        "S0", "K", "K1", "K2", "K3", "K4", "Pi_0", "P_net", "c", "c_max", "alpha",
         "H_KO", "H_KI", "B", "T", "n_C", "n_P",
     }
     allowed_text = {"O_KO", "O_KI", "Oc", "settlement", "exercise_style"}
@@ -581,10 +652,10 @@ def _normalize_term_overrides(value: object) -> dict[str, str | float]:
 
 
 def _explicit_term_assignments(text: str) -> dict[str, float]:
-    aliases = {"k": "K", "k1": "K1", "k2": "K2", "k3": "K3", "k4": "K4",
+    aliases = {"s0": "S0", "k": "K", "k1": "K1", "k2": "K2", "k3": "K3", "k4": "K4",
                "k_l": "K1", "k_h": "K2", "pi_0": "Pi_0", "p_net": "P_net", "t": "T", "n_c": "n_C", "n_p": "n_P"}
     values: dict[str, set[float]] = {}
-    pattern = r"(?<![A-Za-z0-9_])(K_L|K_H|K[1-4]?|Pi_0|P_net|n_C|n_P|T)\s*[=＝]\s*(\d+(?:\.\d+)?)(?![\d.])"
+    pattern = r"(?<![A-Za-z0-9_])(S0|K_L|K_H|K[1-4]?|Pi_0|P_net|n_C|n_P|T)\s*[=＝]\s*(\d+(?:\.\d+)?)(?![\d.])"
     for match in re.finditer(pattern, text, re.IGNORECASE):
         # Negative instructions do not establish a new confirmed value.
         prefix = re.split(r"[，,。；;\n]", text[:match.start()])[-1]
@@ -595,7 +666,52 @@ def _explicit_term_assignments(text: str) -> dict[str, float]:
     return {key: next(iter(options)) for key, options in values.items() if len(options) == 1}
 
 
-def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
+def _valuation_date_from_text(text: str) -> str | None:
+    selected = None
+    for match in _DATE_MENTION.finditer(text):
+        before, after = text[max(0, match.start()-45):match.start()], text[match.end():]
+        if not (_VALUATION_DATE_BEFORE.search(before) or _VALUATION_DATE_AFTER.match(after)):
+            continue
+        clause_start = re.split(r"[，,。；;！？!?\n]", before)[-1]
+        if re.search(r"(?:不要|不用|不采用|不按|不以|不是|并非)[^，。；;]{0,20}$", clause_start):
+            continue
+        year = match["year"] or match["ch_year"]
+        try:
+            selected = date(
+                int(year) if year else datetime.now(ZoneInfo("Asia/Shanghai")).year,
+                int(match["month"] or match["ch_month"]), int(match["day"] or match["ch_day"]),
+            ).isoformat()
+        except ValueError:
+            continue
+    return selected
+
+
+def _product_term_sections(text: str) -> tuple[str, dict[str, str]]:
+    """Bind a labelled clause and its continuations before normalizing terms."""
+    products = mentioned_product_ids(text)
+    paired_spreads = [product_id for product_id in products if product_id in {"2.1", "2.2", "2.3", "2.4"}]
+    clauses = _clauses(text)
+    scopes: dict[str | None, list[str]] = {None: []}
+    product_id = None
+    for clause in clauses:
+        labels = mentioned_product_ids(clause)
+        if not labels:
+            bare_id = re.match(r"\s*(\d{1,2}\.\d{1,2})(?![\d.])(?=\s*[：:、]|\s*(?:用|买|卖|K[ =＝_]))", clause)
+            if bare_id and bare_id[1] in product_names():
+                labels = (bare_id[1],)
+            elif len(paired_spreads) == 1 and re.match(r"\s*(?:价差|这笔价差)\s*(?:是|为|买|卖|K|行权|执行|净)", clause):
+                labels = tuple(paired_spreads)
+        if len(labels) == 1:
+            product_id = labels[0]
+        elif labels or re.match(r"\s*(?:两者|两种结构|两种产品|两笔|二者|共同|统一|均|所有候选)", clause):
+            product_id = None
+        # Shared exercise and settlement conventions follow the contract unless
+        # the clause itself belongs to a named structure.
+        scopes.setdefault(product_id if labels or not re.search(r"(?:现金结算|欧式行权)", clause) else None, []).append(clause)
+    return "，".join(scopes.pop(None)), {key: "，".join(clauses) for key, clauses in scopes.items()}
+
+
+def _extract_term_overrides_from_clause(text: str, *, product_id: str | None = None) -> dict[str, str | float]:
     compact = re.sub(r"\s+", "", text).lower()
     result: dict[str, str | float] = {}
     changed_number = (
@@ -608,7 +724,7 @@ def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
         ("K3", rf"第三执行(?:价|水平){changed_number}"),
         ("K2", rf"第二执行(?:价|水平){changed_number}"),
         ("K1", rf"第一执行(?:价|水平){changed_number}"),
-        ("K", rf"(?<![一二三四五六七八九十])执行(?:价|水平){changed_number}"),
+        ("K", rf"(?<![一二三四五六七八九十])(?:执行(?:价|水平)|行权价){changed_number}"),
         ("P_net", rf"净(?:权利金|期权费){changed_number}"),
         ("Pi_0", rf"(?<!净)(?:权利金|期权费){changed_number}"),
     )
@@ -616,6 +732,28 @@ def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
         match = re.search(pattern, compact)
         if match:
             result[key] = float(match.group(1))
+    spot = re.search(r"(?:现价(?:基准)?|初始(?:价格|价))(?:(?:统[一合])|(?:归一(?:化)?到?|标准化为)|按|取|设为|为|成|是|=|：)*(\d+(?:\.\d+)?)\s*点?(?![\d.])", compact)
+    if spot and not compact[spot.end():].startswith(("万", "元", "%", "％")):
+        result["S0"] = float(spot[1])
+    if product_id in {"1.1", "1.2", "2.1", "2.2", "2.3", "2.4"}:
+        number = r"(\d+(?:\.\d+)?)"
+        if product_id.startswith("1."):
+            strike = re.search(rf"(?:买入?|行权|行权价){number}(?![\d.%％])", compact)
+            strike = strike or re.search(rf"(?<![\d.]){number}(?:点)?行权", compact)
+            if strike:
+                result.setdefault("K", float(strike[1]))
+            premium_key = "Pi_0"
+        else:
+            long_leg = re.search(rf"买入?(?:相当于(?:期初)?标的价格)?{number}(?:[%％]的行权价|(?![\d.%％]))", compact)
+            short_leg = re.search(rf"卖出?(?:相当于(?:期初)?标的价格)?{number}(?:[%％]的行权价|(?![\d.%％]))", compact)
+            if long_leg and short_leg:
+                buy, sell = float(long_leg[1]), float(short_leg[1])
+                if (buy < sell) == (product_id in {"2.1", "2.2"}) and buy != sell:
+                    result.update(K1=min(buy, sell), K2=max(buy, sell))
+            premium_key = "P_net"
+        premium = re.search(rf"(?:净|先)?(?:付|交|支付|收取?){number}[%％]", compact)
+        if premium:
+            result.setdefault(premium_key, float(premium[1]))
 
     rate_patterns = (
         ("c", rf"(?:票息|票面收益){changed_number}[%％]"),
@@ -649,12 +787,12 @@ def _extract_term_overrides_from_clause(text: str) -> dict[str, str | float]:
             result["Oc"] = schedule
     if "现金结算" in compact:
         result["settlement"] = "cash"
-    if "欧式行权" in compact:
+    if "欧式行权" in compact or "欧式现金结算" in compact:
         result["exercise_style"] = "European"
     return result
 
 
-def _term_override_operations(text: str) -> tuple[tuple[object, ...], ...]:
+def _term_override_operations(text: str, *, product_id: str | None = None) -> tuple[tuple[object, ...], ...]:
     operations: list[tuple[object, ...]] = []
     last_keys: tuple[str, ...] = ()
     for clause in _clauses(text):
@@ -670,16 +808,24 @@ def _term_override_operations(text: str) -> tuple[tuple[object, ...], ...]:
         if keys and _rejects_term_change(clause):
             operations = [operation for operation in operations if str(operation[1]) not in keys]
             continue
-        updates = _extract_term_overrides_from_clause(clause)
+        updates = _extract_term_overrides_from_clause(clause, product_id=product_id)
         if not updates and keys:
             updates = _implied_term_override(clause, keys)
         operations.extend(("set", key, value) for key, value in updates.items())
+    if product_id in {"2.1", "2.2", "2.3", "2.4"}:
+        strikes = _extract_term_overrides_from_clause(text, product_id=product_id)
+        if {"K1", "K2"}.issubset(strikes) and not any(op[1] in {"K1", "K2"} for op in operations):
+            operations.extend(("set", key, strikes[key]) for key in ("K1", "K2"))
     return tuple(operations)
 
 
 def _inherits_term_keys(clause: str) -> bool:
     return bool(
-        re.search(r"(?:恢复|改回|还原|使用|用)?默认|(?:取消|删除|移除|清除)|(?:不要|别|无需|不用).{0,6}(?:改|调|调整|设|设置|变)|(?:改为|改成|调整到|调整为|设为|变为)\s*\d", clause)
+        re.search(
+            rf"(?:恢复|改回|还原|使用|用)?默认|(?:取消|删除|移除|清除)|"
+            rf"{_TERM_REJECTION}.{{0,6}}{_TERM_ACTION}|(?:改为|改成|调整到|调整为|设为|变为)\s*\d",
+            clause,
+        )
     )
 
 
@@ -809,6 +955,7 @@ def delivery_preferences_from_text(text: str) -> tuple[set[str], set[str]]:
 
 def _normalize_horizon(value: object) -> str | None:
     text = _expand_natural_horizon(str(value or "").strip())
+    text = _DATE_MENTION.sub(lambda match: " " * len(match[0]), text)
     matches = tuple(_HORIZON.finditer(text))
     if not matches:
         return "3个月" if "一季" in text else None
@@ -824,6 +971,8 @@ def _normalize_horizon(value: object) -> str | None:
         normalized = amount_text + ("年" if "年" in unit else "个月")
         before = text[max(0, match.start() - 10):match.start()]
         after = text[match.end():min(len(text), match.end() + 12)]
+        if re.match(r"\s*第?\d+\s*(?:日|号)", after):
+            continue
         context = before + match.group(0) + after
         score = 0
         if re.search(r"(?:未来|期限|持有|投资|合同|到期|存续)", context):
@@ -1072,8 +1221,8 @@ __all__ = (
 
 def requested_comparison_products(prompt, evidence):
     """Resolve user-named comparison subjects from verified catalogue identity."""
-    import re
-    if not re.search(r'比较|对比|相比|vs\.?|versus', prompt, re.I):
+    explicit = set(named_comparison_product_ids(prompt))
+    if not explicit:
         return {}
     products = {}
     for item in evidence:
@@ -1081,6 +1230,6 @@ def requested_comparison_products(prompt, evidence):
         identity = row.get('identity') or {}
         product_id = row.get('product_id')
         name = identity.get('name_zh')
-        if product_id and name and (name in prompt or re.search(r'(?<![\d.])'+re.escape(product_id)+r'(?![\d.])', prompt)):
+        if product_id in explicit and name:
             products[product_id] = name
     return products if len(products)>1 else {}
