@@ -91,7 +91,9 @@ class TushareHttpClient:
             raise ProviderUnavailable("数据服务返回格式无效")
         ok = result.get("code") == 0 if self.provider == "tushare" else result.get("success") is True
         if response.status_code != 200 or not ok:
-            raise provider_failure(str(result.get("msg", result.get("error", ""))), response.status_code)
+            detail = " ".join(value for key in ("msg", "message", "error")
+                              if isinstance(value := result.get(key), str))
+            raise provider_failure(detail, response.status_code)
         if result.get("cdn_url"):
             raise ProviderUnavailable("服务返回外部数据下载链接，当前连接不支持该返回格式", reason_code="unsupported_cdn_response")
         data = result.get("data")
