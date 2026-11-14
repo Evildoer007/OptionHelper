@@ -64,31 +64,35 @@ def blocked_research_modules(text):
     value = str(text).lower()
     all_modules = {'payoffer', 'pricer', 'backtester'}
     negative = r'(?:不需要|不要|不得|禁止|无需|不用|先别|别|不)(?:再|先|实际)?'
-    chinese_action = r'(?:做|进行|执行|启动|生成)?(?:任何|实际|金融|数值)?'
+    chinese_action = r'(?:做|进行|执行|启动|生成|跑|计算)?(?:任何|实际|金融|数值)?'
     english_negative = r"(?:do not|don't|no|without)\s+(?:(?:perform|run|start)\s+)?(?:any\s+)?"
     topics = {
         'pricer': r'(?:定价|估值|pricing)',
-        'backtester': r'(?:回测|历史回放|backtest(?:ing)?)',
+        'backtester': r'(?:(?:历史)?回测|历史回放|(?:历史)?胜率|backtest(?:ing)?)',
         'payoffer': r'(?:收益分析|收益计算|payoff)',
         'report': r'(?:报告|reports?)',
-        'calculation': r'(?:计算|calculations?|computations?|computing)',
+        'calculation': r'(?:计算(?!\s*(?:历史)?(?:胜率|波动率|损失|亏损|收益率|Delta|Gamma|Vega|Theta))|calculations?|computations?|computing)',
     }
     topic = '(?:' + '|'.join(topics.values()) + ')'
     action = rf'(?:{chinese_action}|(?:perform|run|start|generate)\s+)?{topic}'
     connector = r'\s*(?:和|或|与|、|及|/|and|or)\s*'
     restriction = re.compile(rf'(?:{negative}|{english_negative})\s*{action}(?:{connector}{action})*')
     declined_text = ' '.join(match.group() for match in restriction.finditer(value))
-    affirmative_text = restriction.sub('', value)
+    affirmative_text = restriction.sub(' ', value)
     named_topics = '|'.join(rf'(?P<{name}>{pattern})' for name, pattern in topics.items())
     declined = {match.lastgroup for match in re.finditer(named_topics, declined_text)}
     if 'calculation' in declined:
         return all_modules
-    if re.search(r'(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构|(?:比较|对比)(?=$|[，。；;!?！？\s]|[一二三四五六七八九十两\d]))', value):
-        return all_modules
+    if re.search(r"(?:只|仅)(?:需|需要|做|看|算)?[^，,。；;\n]{0,28}(?:解析|蒙特卡洛)?(?:定价|估值)"
+                 r"(?!并|和|与|、|及)(?:$|[，,。；;\n])", affirmative_text) and not re.search(topics['backtester'], affirmative_text):
+        declined.add("backtester")
     # A selection mandate declining pricing and delivery requests catalog
     # comparison only, unless it expressly asks for another financial calculation.
     from .workflow_policy import requests_structure_selection
     financial_action = '|'.join(topics[name] for name in all_modules)
+    if (re.search(r'(?:只|仅)(?:做|要|需)?(?:结构(?:比较|对比|筛选|推荐)|(?:比较|对比|筛选|推荐)结构|(?:比较|对比)(?=$|[，。；;!?！？\s]|[一二三四五六七八九十两\d]))', value)
+        and not re.search(financial_action, affirmative_text)):
+        return all_modules
     selection_requested = requests_structure_selection(affirmative_text) or bool(
         re.search(r'(?:筛选|挑选|选出)\s*[一二三四五六七八九十两\d]+\s*(?:种|个)\s*$', affirmative_text)
     )
