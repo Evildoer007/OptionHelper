@@ -6,7 +6,7 @@ from threading import Lock
 from typing import Any, Protocol, Callable
 
 from ..errors import UnavailableCapabilityError, ValidationError
-from ..report_delivery import delivery_request
+from ..report_delivery import delivery_request, existing_results_only
 from ..identity.session_identity import SessionIdentity
 from ..model_gateway.gateway import ModelGateway
 from ..settings.settings_models import ModelSelection
@@ -54,6 +54,7 @@ class ConversationService:
         selection: ModelSelection | None = None,
         attachments: list[dict[str, Any]] | None = None,
         cancelled: Callable[[], bool] | None = None,
+        research_settings: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Serialize one task and replay an identical HTTP retry.
 
@@ -130,10 +131,19 @@ class ConversationService:
                             identity, task_id, export_ids, delivery['formats'] if len(delivery['formats']) > 1 else delivery['format'],
                             cancelled=turn_cancelled, request=delivery)
                         export_handled = True
-                    elif not export_handled:
+                    elif delivery and not export_handled and existing_results_only(message):
+                        deliver = getattr(self._report_delivery, 'deliver_existing_results', None)
+                        if callable(deliver) and getattr(self._report_delivery, 'tools', None):
+                            try:
+                                response = deliver(identity, task_id, delivery)
+                            except ValidationError as error:
+                                response = {'status': 'needs_input', 'text': str(error)}
+                            export_handled = True
+                    if not export_handled:
                         response = self._run_model(
                             identity, task_id, message, selection,
-                            execution_ids=_execution_ids(request_state),
+                            execution_ids={**_execution_ids(request_state), **{
+                                f"research_{key}": value for key, value in (research_settings or {}).items()}},
                             attachments=attachments or [],
                         )
                     created = []
