@@ -47,11 +47,23 @@ def contract_research_facts(contract: ResolvedContract, context=None):
         facts['legs'] = [{'kind': 'call' if product == '1.1' else 'put',
                          'quantity': quantity, 'strike': terms['K']}]
         facts['initial_cost_ratio'] = quantity * terms['Pi_0'] / 100
-    elif product == '2.1':
-        facts['legs'] = [{'kind': 'call', 'quantity': 1, 'strike': terms['K1']},
-                         {'kind': 'call', 'quantity': -1, 'strike': terms['K2']}]
+        # Inverting the verified vanilla terminal cashflows yields the
+        # zero-profit crossing on the exercised side of the strike.
+        crossing = terms['K'] + (terms['Pi_0'] if product == '1.1' else -terms['Pi_0'])
+        if quantity > 0 and terms['Pi_0'] > 0 and crossing >= 0:
+            facts['break_even_normalized'] = crossing
+    elif product in {'2.1', '2.3'}:
+        is_call_spread = product == '2.1'
+        lower, upper = terms['K1'], terms['K2']
+        long_strike, short_strike = (lower, upper) if is_call_spread else (upper, lower)
+        kind = 'call' if is_call_spread else 'put'
+        facts['legs'] = [{'kind': kind, 'quantity': 1, 'strike': long_strike},
+                         {'kind': kind, 'quantity': -1, 'strike': short_strike}]
         facts['initial_cost_ratio'] = terms['P_net'] / 100
-        facts['maximum_net_return'] = (terms['K2'] - terms['K1'] - terms['P_net']) / 100
+        facts['maximum_net_return'] = (upper - lower - terms['P_net']) / 100
+        if 0 < terms['P_net'] < upper - lower:
+            premium_adjustment = terms['P_net'] if is_call_spread else -terms['P_net']
+            facts['break_even_normalized'] = long_strike + premium_adjustment
     else:
         return facts
     facts['long_only_legs'] = all(leg['quantity'] > 0 for leg in facts['legs'])
@@ -100,6 +112,10 @@ def report_research_projection(facts):
         suitable.append('适用于接受收益封顶的看涨判断。')
         unsuitable.append('不适用于要求仅含买入腿，或希望完整参与大幅上涨的需求。')
         risks.append(f"净收益上限为{percent(facts['maximum_net_return'])}；高行权价是合同封顶边界，不能据此认定市场压力位。")
+    elif facts.get('product_id') == '2.3' and legs:
+        suitable.append('适用于接受收益封顶的看跌判断。')
+        unsuitable.append('不适用于希望继续受益于标的跌破低行权价的需求。')
+        risks.append(f"标的到期价格达到低行权价后，合同净收益封顶于{percent(facts['maximum_net_return'])}。")
     elif facts.get('product_id') == '1.1' and legs:
         suitable.append('适用于接受期权费损失、希望参与上涨的需求。')
         risks.append('标的上涨不等于合同盈利；到期收益仍需覆盖已支付的期权费。')
@@ -121,7 +137,9 @@ def report_research_projection(facts):
         reason.append('合同条款不要求追加保证金；该设置与是否包含卖出腿分别判断。')
     bound = facts.get('loss_bound')
     if bound is not None:
-        risks.append(f"合同结算亏损上限为参考规模的{percent(bound['value'])}，不包含合同外费用、信用或流动性损失。")
+        amount = facts.get('context', {}).get('reference_notional')
+        money = f"，约{number(bound['value'] * amount / 10000)}万元" if amount else ''
+        risks.append(f"合同结算亏损上限为参考规模的{percent(bound['value'])}{money}，不包含合同外费用、信用或流动性损失。")
     if 'initial_cost_amount' in facts:
         reason.append(f"按用户确认的参考规模折算，期初净支出为{number(facts['initial_cost_amount']/10000)}万元。")
     protection = facts.get('protection')
