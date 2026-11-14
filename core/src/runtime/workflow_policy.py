@@ -185,10 +185,16 @@ def _requests_structure_selection(text: str) -> bool:
     ):
         return True
     # A ranking request can omit its object after stating investment constraints.
-    return bool(re.search(
+    if re.search(
         r"(?:按|依据|根据)[^，。；;!?！？]{0,30}(?:最大损失|最大亏损|风险|收益|gamma|delta|vega)"
         r"[^，。；;!?！？]{0,20}(?:筛选|选出|挑选|排序)", text
-    ))
+    ):
+        return True
+    # Some natural questions name both contracts without using a generic
+    # object such as “产品” or “方案”. Resolve the same catalogue names that
+    # will be used for candidate admission.
+    from .knowledger.search import named_comparison_product_ids
+    return bool(named_comparison_product_ids(text))
 
 
 def _has_pending_selection(messages: Sequence[Mapping[str, object]]) -> bool:
@@ -225,7 +231,8 @@ def is_consultation_request(text: str) -> bool:
     if re.fullmatch(r"(?:你好|您好|谢谢|多谢|辛苦了|hello|hi)[，。！!\s]*", text):
         return True
     explanation = re.search(r"解释|说明一下|什么是|是什么意思|有什么区别|为什么|怎么理解|如何理解|原理", text)
-    action = re.search(r"生成|导出|出一份|重新计算|重新估值|重新定价|重新回测|重算|计算一下|回测一下|帮我.*(?:计算|估值|定价|回测)", text)
+    action = re.search(r"生成|导出|(?:出|写|做)一份|(?:写成|做成|给我)[^，。；]{0,20}(?:报告|简报|报价)"
+                       r"|重新计算|重新估值|重新定价|重新回测|重算|计算一下|回测一下|帮我.*(?:计算|估值|定价|回测)", text)
     return bool(explanation and not action)
 
 
