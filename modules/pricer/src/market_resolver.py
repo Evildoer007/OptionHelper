@@ -140,6 +140,8 @@ def market_snapshot_from_history(
         if len(unique_hv_fields) == 1 else declared_hv_fields
     )
     result = {"valuation_date": raw.index[-1].strftime("%Y-%m-%d"), "history_start_date": raw.index[0].strftime("%Y-%m-%d"), "history_end_date": raw.index[-1].strftime("%Y-%m-%d"), "spot": {key:float(value) for key,value in raw.iloc[-1].to_dict().items()}, "historical_volatility": {key:float(value) for key,value in vols.items()}, "risk_free_rate":float(risk_free_rate), "dividend_yield":dividend_yield, "hv_window":hv_window, "spot_price_field":"close", "hv_price_field":hv_price_field, "hv_fields_by_asset":declared_hv_fields, "return_method":"log_return", "annualization_trading_days":244, "source":"local_close_and_adj_close"}
+    result["hv_price_start_date"] = hv_prices.index[-hv_window - 1].strftime("%Y-%m-%d")
+    result["hv_price_end_date"] = hv_prices.index[-1].strftime("%Y-%m-%d")
     if trading_calendar is not None:
         result["trading_calendar"] = dict(trading_calendar)
     return result
