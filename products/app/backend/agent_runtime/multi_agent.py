@@ -11,7 +11,7 @@ from concurrent.futures import (
     CancelledError as FutureCancelledError,
     Future,
     ThreadPoolExecutor,
-    TimeoutError as FutureTimeoutError,
+    wait,
 )
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -340,8 +340,10 @@ class AgentRunConcurrencyGate:
         self._lock = Lock()
         self._active_runs = 0
 
-    def acquire(self, timeout_seconds: float) -> "AgentRunConcurrencyLease":
-        if not self._semaphore.acquire(timeout=max(0.0, timeout_seconds)):
+    def acquire(self) -> "AgentRunConcurrencyLease":
+        # A caller can hold sibling leases until it collects and disposes
+        # them. Admission cannot wait for slots owned by that same caller.
+        if not self._semaphore.acquire(blocking=False):
             raise UnavailableCapabilityError("agent_run_concurrency", "App多智能体并发已满，请稍后重试。")
         with self._lock:
             self._active_runs += 1
@@ -656,23 +658,26 @@ class AgentRunHandle:
     def result(self, timeout_seconds: float | None = None) -> AgentRunResult:
         timeout = self._timeout_seconds if timeout_seconds is None else max(0.0, timeout_seconds)
         deadline = monotonic() + timeout
-        while True:
-            if self._request_control.cancelled and not self._future.done():
+        while not self._future.done():
+            cancelled = self._request_control.cancelled
+            if cancelled and self._request_control.reason != "model_request_timeout":
                 self.session.append("agent_run.caller_settled", status="cancelled")
                 raise AgentRunCancelled(self._request_control.reason or "AgentRun cancelled")
             remaining = deadline - monotonic()
-            if remaining <= 0:
+            if cancelled or remaining <= 0:
                 self.cancel("timeout")
                 self.session.append("agent_run.caller_settled", status="timed_out")
                 raise AgentRunTimedOut("AgentRun exceeded its deadline")
-            try:
-                return self._future.result(timeout=min(0.02, remaining))
-            except FutureTimeoutError:
-                continue
-            except FutureCancelledError as error:
-                raise AgentRunCancelled(self._request_control.reason or "AgentRun cancelled") from error
-            except ModelRequestCancelled as error:
-                raise AgentRunCancelled(str(error)) from error
+            wait((self._future,), timeout=min(0.02, remaining))
+        try:
+            return self._future.result()
+        except TimeoutError as error:
+            self.session.append("agent_run.caller_settled", status="timed_out")
+            raise AgentRunTimedOut("AgentRun model request timed out") from error
+        except FutureCancelledError as error:
+            raise AgentRunCancelled(self._request_control.reason or "AgentRun cancelled") from error
+        except ModelRequestCancelled as error:
+            raise AgentRunCancelled(str(error)) from error
 
     def cancel(self, reason: str = "parent_cancelled") -> None:
         self._request_control.cancel(reason)
@@ -686,14 +691,12 @@ class AgentRunHandle:
             self._dispose_requested = True
         if not self._future.done():
             self.cancel("dispose")
-        try:
-            self._future.result(timeout=max(0.0, wait_seconds))
-        except FutureTimeoutError:
+        if not self._future.done():
+            wait((self._future,), timeout=max(0.0, wait_seconds))
+        if not self._future.done():
             self.session.append("agent_run.disposal_deferred", provider_quiescent=False)
             self._install_quiescence_callback()
             return False
-        except Exception:
-            pass
         self._attempt_mark_disposed(propagate=True)
         return True
 
@@ -701,12 +704,9 @@ class AgentRunHandle:
         """Retry parent settlement after provider work has become quiescent."""
 
         if not self._future.done():
-            try:
-                self._future.result(timeout=max(0.0, wait_seconds))
-            except FutureTimeoutError:
+            wait((self._future,), timeout=max(0.0, wait_seconds))
+            if not self._future.done():
                 return False
-            except Exception:
-                pass
         self._attempt_mark_disposed(propagate=True)
         return self.disposed
 
@@ -1077,10 +1077,6 @@ class OneShotAgentRuntime:
             raise ValidationError("AgentRun角色不属于当前MultiAgentRecommendationPreset")
         declared_roles = {canonical_role_name(item): item for item in self._preset.roles}
         wire_role = normalized_role if normalized_role in self._preset.roles else declared_roles[canonical_role]
-        with self._budget_lock:
-            if self._started_runs >= self._preset.effective_workflow_total_budget:
-                raise ValidationError("MultiAgentRecommendationPreset超过AgentRun预算")
-            self._started_runs += 1
         if self._is_cancelled(self._identity, self._task_id):
             raise AgentRunCancelled("parent task already cancelled")
         route = self._resolve_model_route(wire_role)
@@ -1091,8 +1087,11 @@ class OneShotAgentRuntime:
                 "当前ModelGateway未提供多Agent受控请求门禁。",
             )
         request_control_gate(self._identity, selection=route.dispatch_selection)
-        concurrency_lease = self._concurrency_gate.acquire(self._preset.max_seconds_per_agent_run)
         with self._budget_lock:
+            if self._started_runs >= self._preset.effective_workflow_total_budget:
+                raise ValidationError("MultiAgentRecommendationPreset超过AgentRun预算")
+            concurrency_lease = self._concurrency_gate.acquire()
+            self._started_runs += 1
             role_ordinal = self._role_run_counts.get(canonical_role, 0) + 1
             self._role_run_counts[canonical_role] = role_ordinal
         stable_run_digest = hashlib.sha256(
@@ -1114,16 +1113,15 @@ class OneShotAgentRuntime:
         except Exception:
             concurrency_lease.release()
             raise
-        control = ModelRequestControl(self._preset.max_seconds_per_agent_run)
-        session.append(
-            "agent_run.started", preset_id=self._preset.preset_id, preset_revision=self._preset.revision,
-            role=wire_role,
-            model_selection=_selection_projection(route.model_selection), model_selection_source=route.source,
-            input_hash=_hash(payload), parent_context_inherited=False, one_shot=True,
-        )
-        self._emit_visible_event("agent_run", "started", _role_started_summary(normalized_role))
         executor: ThreadPoolExecutor | None = None
         try:
+            session.append(
+                "agent_run.started", preset_id=self._preset.preset_id, preset_revision=self._preset.revision,
+                role=wire_role,
+                model_selection=_selection_projection(route.model_selection), model_selection_source=route.source,
+                input_hash=_hash(payload), parent_context_inherited=False, one_shot=True,
+            )
+            self._emit_visible_event("agent_run", "started", _role_started_summary(normalized_role))
             dispatch_checkpoints = DurabilityCheckpointStore(
                 self._event_log, event_sink=session.project_persisted_event,
             )
@@ -1134,16 +1132,16 @@ class OneShotAgentRuntime:
                 safe_metadata={"agent_run_id": session.agent_run_id, "role": wire_role},
             )
             executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"optionhelper-{agent_run_id[:18]}")
+            control = ModelRequestControl(self._preset.max_seconds_per_agent_run)
             future = executor.submit(
                 self._invoke_model, session, wire_role, payload, route, control,
                 dispatch_checkpoints, checkpoint,
             )
         except Exception:
-            control.cancel("start_failed")
-            session.append("agent_run.start_failed", provider_quiescent=True)
             if executor is not None:
                 executor.shutdown(wait=False, cancel_futures=True)
             concurrency_lease.release()
+            session.append("agent_run.start_failed", provider_quiescent=True)
             self._workflow_run.child_settled(session)
             session.append("agent_run.disposed", provider_quiescent=True)
             self._workflow_run.child_disposed(session)
@@ -1307,8 +1305,8 @@ class OneShotAgentRuntime:
                 self.workflow_run_id, session.agent_run_id, session.session_id, role, status, result,
                 monotonic() - started, _selection_projection(route.model_selection), route.source,
             )
-        except ModelRequestCancelled:
-            status = "cancelled"
+        except (ModelRequestCancelled, TimeoutError) as error:
+            status = "timed_out" if isinstance(error, TimeoutError) else "cancelled"
             if not external_settled:
                 dispatch_checkpoints.failed(checkpoint)
             raise
