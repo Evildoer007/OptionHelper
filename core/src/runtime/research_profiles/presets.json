@@ -18,7 +18,7 @@
     },
     "deep": {
       "calculations": 24,
-      "product_iterations": 4,
+      "product_iterations": 3,
       "council_reviews": 2,
       "ranking_supplements": 2,
       "role_turns": 64
