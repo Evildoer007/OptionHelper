@@ -1,4 +1,4 @@
-import { presentAssistantReply } from "/app/frontend/shared/reply-presentation.js";
+import { presentAssistantReply, withoutFactReferences } from "/app/frontend/shared/reply-presentation.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
 import { request } from "/app/frontend/shared/app-request.js";
 
@@ -57,29 +57,91 @@ export function openWorkspaceSettings(section = "", trigger = document.activeEle
   dialog.setAttribute("aria-label", "设置中心");
   const frame = document.createElement("iframe");
   frame.title = "设置中心";
+  frame.hidden = true;
+  const loading = document.createElement("div");
+  loading.className = "workspace-settings-dialog__loading";
+  const status = document.createElement("p");
+  status.setAttribute("role", "status");
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "button-quiet";
+  retry.textContent = "重试";
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "workspace-settings-dialog__close";
+  setMessageActionIcon(dismiss, "关闭设置", "M6 6l12 12M18 6L6 18");
+  loading.append(status, retry);
   const url = new URL(settingsURLFor(location, section), location.origin);
   url.searchParams.set("embedded", "1");
-  frame.src = url.href;
-  dialog.append(frame);
+  let loadTimeout;
+  let loadId = 0;
+  let loadFailed = false;
+  const fail = () => {
+    window.clearTimeout(loadTimeout);
+    loadFailed = true;
+    frame.hidden = true;
+    loading.hidden = false;
+    dismiss.hidden = false;
+    status.textContent = "设置未能加载";
+    retry.hidden = false;
+  };
+  const load = () => {
+    window.clearTimeout(loadTimeout);
+    loadFailed = false;
+    frame.hidden = true;
+    loading.hidden = false;
+    dismiss.hidden = false;
+    status.textContent = "正在加载设置…";
+    retry.hidden = true;
+    url.searchParams.set("load_id", String(++loadId));
+    loadTimeout = window.setTimeout(fail, 3000);
+    frame.src = url.href;
+  };
+  const reveal = () => {
+    if (loadFailed || !frame.hidden) return;
+    const hadFocus = loading.contains(document.activeElement) || document.activeElement === dismiss;
+    window.clearTimeout(loadTimeout);
+    frame.hidden = false;
+    loading.hidden = true;
+    dismiss.hidden = true;
+    if (hadFocus) frame.contentDocument?.querySelector(".settings-close")?.focus({ preventScroll: true });
+  };
+  const close = (input) => {
+    if (input === "pointer" || input === "keyboard") {
+      document.querySelector("[data-account-menu-root]")?.toggleAttribute("data-account-pointer", input === "pointer");
+    }
+    dialog.close();
+  };
+  const receive = event => {
+    if (!dialog.open || event.origin !== location.origin || event.source !== frame.contentWindow) return;
+    if (event.data?.loadId !== String(loadId)) return;
+    if (event.data.type === "optionhelper.settings-close") close(event.data.input);
+    else if (event.data.type === "optionhelper.settings-ready") reveal();
+    else if (event.data.type === "optionhelper.settings-failed") fail();
+  };
+  retry.addEventListener("click", load);
+  dismiss.addEventListener("click", event => close(event.detail > 0 ? "pointer" : "keyboard"));
+  dialog.append(loading, dismiss, frame);
   document.body.append(dialog);
   workspaceSettingsDialog = dialog;
-  const close = () => dialog.close();
-  const receive = event => {
-    if (event.origin !== location.origin || event.source !== frame.contentWindow) return;
-    if (event.data?.type === "optionhelper.settings-close") close();
-  };
   window.addEventListener("message", receive);
-  dialog.addEventListener("click", event => { if (event.target === dialog) close(); });
+  dialog.addEventListener("cancel", event => { event.preventDefault(); close("keyboard"); });
+  dialog.addEventListener("click", event => {
+    if (event.target === dialog) close(event.detail > 0 ? "pointer" : "keyboard");
+  });
   dialog.addEventListener("close", () => {
+    window.clearTimeout(loadTimeout);
     window.removeEventListener("message", receive);
     dialog.remove();
-    workspaceSettingsDialog = null;
+    if (workspaceSettingsDialog === dialog) workspaceSettingsDialog = null;
     const focusTarget = trigger?.isConnected && trigger.getClientRects().length
       ? trigger : document.querySelector("[data-account-menu-toggle]");
     focusTarget?.focus({ preventScroll: true });
     window.dispatchEvent(new Event("focus"));
   }, { once: true });
   dialog.showModal();
+  dismiss.focus({ preventScroll: true });
+  load();
 }
 
 function choiceLabel(select) {
@@ -489,7 +551,14 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
   };
   if (accountMenuRoot && accountMenuToggle && accountMenu && accountMenuRoot.dataset.accountMenuReady !== "true") {
     accountMenuRoot.dataset.accountMenuReady = "true";
-    accountMenuToggle.addEventListener("click", () => setAccountMenuOpen(accountMenu.hidden, { focus: accountMenu.hidden ? "first" : false }));
+    accountMenuToggle.addEventListener("click", (event) => {
+      const pointer = event.detail > 0;
+      const open = accountMenu.hidden;
+      accountMenuRoot.toggleAttribute("data-account-pointer", pointer);
+      // Keep arrow navigation available after pointer activation without selecting a menu item.
+      if (pointer) accountMenuToggle.focus({ preventScroll: true });
+      setAccountMenuOpen(open, { focus: open && !pointer ? "first" : false });
+    });
     accountMenuToggle.addEventListener("keydown", (event) => {
       if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
       event.preventDefault();
@@ -508,19 +577,19 @@ export async function initializeWorkspace(mode, { onModeChange } = {}) {
       } else if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
         focusAccountMenuItem(event.key === "Home" ? "first" : "last");
-      } else if (event.key === "Escape") {
-        event.preventDefault();
-        setAccountMenuOpen(false);
-        accountMenuToggle.focus();
       }
     });
     document.addEventListener("pointerdown", (event) => {
+      accountMenuRoot.setAttribute("data-account-pointer", "");
       if (!accountMenuRoot.contains(event.target)) setAccountMenuOpen(false);
     });
+    const navigationKeys = new Set(["Tab", "Enter", " ", "Escape", "ArrowDown", "ArrowUp", "Home", "End"]);
     document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || accountMenu.hidden) return;
+      if (navigationKeys.has(event.key)) accountMenuRoot.removeAttribute("data-account-pointer");
+      if (event.key !== "Escape" || event.defaultPrevented || accountMenu.hidden) return;
+      event.preventDefault();
       setAccountMenuOpen(false);
-      accountMenuToggle.focus();
+      accountMenuToggle.focus({ preventScroll: true });
     });
   }
   logoutButton?.addEventListener("click", async () => {
@@ -1120,29 +1189,32 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
       menu.className = "task-menu";
       menu.setAttribute("role", "menu");
       menu.hidden = true;
-      const addAction = (label, className, handler, icon) => {
-        if (typeof handler !== "function") return;
-        const item = doc.createElement("button");
-        item.type = "button";
-        item.className = className;
-        item.setAttribute("role", "menuitem");
-        const iconSlot = doc.createElement("span");
-        iconSlot.className = "task-menu__icon";
-        iconSlot.append(icon());
-        const labelSlot = doc.createElement("span");
-        labelSlot.className = "task-menu__label";
-        labelSlot.textContent = label;
-        item.append(iconSlot, labelSlot);
-        item.addEventListener("click", (event) => {
-          event.stopPropagation();
-          closeMenu();
-          handler(task);
-        });
-        menu.append(item);
+      const populateMenu = () => {
+        if (menu.childElementCount) return;
+        const addAction = (label, className, handler, icon) => {
+          if (typeof handler !== "function") return;
+          const item = doc.createElement("button");
+          item.type = "button";
+          item.className = className;
+          item.setAttribute("role", "menuitem");
+          const iconSlot = doc.createElement("span");
+          iconSlot.className = "task-menu__icon";
+          iconSlot.append(icon());
+          const labelSlot = doc.createElement("span");
+          labelSlot.className = "task-menu__label";
+          labelSlot.textContent = label;
+          item.append(iconSlot, labelSlot);
+          item.addEventListener("click", (event) => {
+            event.stopPropagation();
+            closeMenu();
+            handler(task);
+          });
+          menu.append(item);
+        };
+        addAction(task.pinned === true ? "取消置顶" : "置顶任务", "task-menu__action", actions.onPin, pinIcon);
+        addAction("重命名", "task-menu__action", actions.onRename, editIcon);
+        addAction("删除任务", "task-menu__action task-menu__action--danger", actions.onDelete, trashIcon);
       };
-      addAction(task.pinned === true ? "取消置顶" : "置顶任务", "task-menu__action", actions.onPin, pinIcon);
-      addAction("重命名", "task-menu__action", actions.onRename, editIcon);
-      addAction("删除任务", "task-menu__action task-menu__action--danger", actions.onDelete, trashIcon);
       trigger.addEventListener("click", (event) => {
         event.stopPropagation();
         if (openMenu?.trigger === trigger) {
@@ -1150,6 +1222,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
           return;
         }
         closeMenu();
+        populateMenu();
         menu.hidden = false;
         doc.body.append(menu);
         menu.style.position = "fixed";
@@ -1213,7 +1286,7 @@ export function createReasoningDisclosure(text = "", { running = false, compact 
   let userSelectedDisclosure = false;
   summary.addEventListener("click", () => { userSelectedDisclosure = true; });
   const update = (nextText, nextRunning = false) => {
-    const value = String(nextText ?? "");
+    const value = withoutFactReferences(nextText, { streaming: nextRunning });
     const wasRunning = details.dataset.running === "true";
     if (!userSelectedDisclosure) {
       if (nextRunning && !compact) details.open = true;
@@ -1353,12 +1426,15 @@ export function setStatusIcon(control, label, status) {
 function createMessageArtifactCard(reference) {
   const card = document.createElement("section");
   card.className = "message-artifact";
+  const identity = document.createElement("div");
+  identity.className = "message-artifact__identity";
   const heading = document.createElement("div");
   heading.className = "message-artifact__heading";
   const title = document.createElement("strong");
-  title.textContent = reference.name;
+  title.textContent = String(reference.name || "").trim() || "研究报告";
   const format = document.createElement("span");
-  format.textContent = reference.format === "docx" ? "Word" : reference.format?.toUpperCase() || (reference.name.toLowerCase().endsWith(".pdf") ? "PDF" : "HTML");
+  const fileFormat = String(reference.format || title.textContent.match(/\.(html|pdf|docx)$/i)?.[1] || "html").toLowerCase();
+  format.textContent = fileFormat === "docx" ? "Word" : fileFormat.toUpperCase();
   heading.append(title, format);
   const actions = document.createElement("div");
   actions.className = "message-artifact__actions";
@@ -1386,7 +1462,8 @@ function createMessageArtifactCard(reference) {
   mark.removeAttribute("aria-label");
   mark.removeAttribute("title");
   mark.setAttribute("aria-hidden", "true");
-  card.append(mark, heading, actions);
+  identity.append(mark, heading);
+  card.append(identity, actions);
   return card;
 }
 
@@ -1574,6 +1651,10 @@ function appendAssistantText(container, text) {
   flush();
 }
 
+const messageTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  hour: "2-digit", minute: "2-digit", hour12: false,
+});
+
 function createConversationMessage(entry, options = {}) {
   const article = document.createElement("article");
   const user = entry?.role === "user";
@@ -1641,9 +1722,7 @@ function createConversationMessage(entry, options = {}) {
     const time = document.createElement("time");
     time.className = "message__time";
     time.dateTime = new Date(createdAt).toISOString();
-    time.textContent = new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit", minute: "2-digit", hour12: false,
-    }).format(createdAt);
+    time.textContent = messageTimeFormatter.format(createdAt);
     actions.append(time);
   }
   if (user) {
@@ -1666,20 +1745,28 @@ function createConversationMessage(entry, options = {}) {
   const rawBlocks = Array.isArray(entry?.content_blocks) ? entry.content_blocks : [];
   const blocks = rawBlocks.length > 0 ? rawBlocks : [{ type: "text", text: String(entry?.content ?? "") }];
   let messageReasoning = null;
+  const shownReports = new Set();
+  const shownDownloads = new Set();
   const imageDownloads = [];
-  let payoffImageNumber = 0;
-  const payoffImageCount = blocks.filter(block => ["payoff-image", "payoff_image"].includes(block?.type)).length;
+  const chartDownloadIcon = "M3 4h12v13H3zM5.5 13l2.5-3 2 2 2.5-4M19 12v8m-3-3 3 3 3-3";
   for (const block of blocks) {
     if (!block || typeof block !== "object") continue;
     const type = String(block.type || "").replaceAll("_", "-");
     const text = String(block.text ?? "");
     if (type === "document" && /^[A-Za-z0-9._:-]+$/.test(block.report_run_id || "")) {
       const prefix = `/api/reports/${encodeURIComponent(block.report_run_id)}/`;
-      if (String(block.preview_url || "").startsWith(prefix) && String(block.download_url || "").startsWith(prefix)) {
-        content.append(createMessageArtifactCard({name:block.title, path:block.preview_url, downloadUrl:block.download_url, format:block.format, reportId:block.report_run_id}));
-      }
+      const path = String(block.preview_url || "");
+      const downloadUrl = String(block.download_url || "");
+      const file = downloadUrl.split("#", 1)[0];
+      if (!path.startsWith(prefix) || !downloadUrl.startsWith(prefix) || shownDownloads.has(file)) continue;
+      shownDownloads.add(file);
+      shownReports.add(block.report_run_id);
+      content.append(createMessageArtifactCard({ name: block.title, path, downloadUrl, format: block.format, reportId: block.report_run_id }));
     } else if (type === "payoff-image" && /^[A-Za-z0-9._:-]{1,160}$/.test(block.task_id || "") && /^[A-Za-z0-9._:-]{1,160}$/.test(block.run_id || "")) {
       const path = `/api/tasks/${encodeURIComponent(block.task_id)}/payoff-images/${encodeURIComponent(block.run_id)}.svg`;
+      const downloadUrl = `${path}?download=1`;
+      if (shownDownloads.has(downloadUrl)) continue;
+      shownDownloads.add(downloadUrl);
       const figure = document.createElement("figure");
       figure.className = "message-payoff-image";
       const image = document.createElement("img");
@@ -1688,12 +1775,10 @@ function createConversationMessage(entry, options = {}) {
       image.style.cssText = "display:block;width:100%;height:auto";
       const caption = document.createElement("figcaption");
       const download = document.createElement("a");
-      download.href = `${path}?download=1`;
+      download.href = downloadUrl;
       download.download = "payoff.svg";
       download.className = "message-payoff-image__download";
-      setMessageActionIcon(download, "下载损益图（SVG）", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
-      payoffImageNumber += 1;
-      download.download = payoffImageCount > 1 ? `payoff-${payoffImageNumber}.svg` : "payoff.svg";
+      setMessageActionIcon(download, "下载损益图（SVG）", chartDownloadIcon);
       imageDownloads.push(download);
       const error = document.createElement("span");
       error.hidden = true;
@@ -1722,7 +1807,6 @@ function createConversationMessage(entry, options = {}) {
     }
   }
   const linkedArtifacts = String(messageText).match(/\/api\/reports\/[^\s/?#]+\/artifacts\/[^\s?#)<>*]+/g) || [];
-  const shownReports = new Set(blocks.filter(block => block?.type === "document").map(block => block.report_run_id));
   for (const link of linkedArtifacts) {
     const artifact = safeArtifactReference(link);
     if (!artifact || shownReports.has(artifact.reportId)) continue;
@@ -1733,35 +1817,50 @@ function createConversationMessage(entry, options = {}) {
     copy.remove();
     copyStatus.remove();
     actions.classList.add("has-image-download");
-    if (imageDownloads.length === 1) actions.prepend(imageDownloads[0]);
-    else {
+    let imageAction = imageDownloads[0];
+    let imageControl = imageAction;
+    if (imageDownloads.length > 1) {
       const downloads = document.createElement("details");
       downloads.className = "message-downloads";
       const trigger = document.createElement("summary");
       trigger.className = "message__action";
-      setMessageActionIcon(trigger, "保存图片", "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
+      setMessageActionIcon(trigger, "下载损益图（SVG）", chartDownloadIcon);
       const menu = document.createElement("div"); menu.className = "message-downloads__menu";
       imageDownloads.forEach((link, index) => {
         link.className = "message-downloads__item";
+        link.download = `payoff-${index + 1}.svg`;
         link.textContent = `图${index + 1}`;
-        link.setAttribute("aria-label", `保存图${index + 1}`);
+        link.setAttribute("aria-label", `下载损益图${index + 1}（SVG）`);
         link.addEventListener("click", () => { downloads.open = false; });
         menu.append(link);
       });
       downloads.addEventListener("keydown", event => {
         if (event.key === "Escape") { downloads.open = false; trigger.focus(); }
       });
-      downloads.append(trigger, menu); actions.prepend(downloads);
+      downloads.append(trigger, menu);
+      imageAction = downloads;
+      imageControl = trigger;
     }
+    if (shownReports.size) {
+      const label = document.createElement("span");
+      label.className = "message-downloads__label";
+      label.textContent = "损益图";
+      imageControl.append(label);
+    }
+    actions.prepend(imageAction);
   }
   article.append(content, actions);
   return article;
 }
 
+const conversationIds = new WeakMap();
+const messageSignatures = new WeakMap();
+
 export function renderMessages(target, messages, emptyText = "输入任务要求后开始对话。", options = {}) {
   if (!target) return;
   target.closest(".chat-surface")?.classList.toggle("chat-surface--empty", !messages?.length);
   if (!messages?.length) {
+    conversationIds.delete(target);
     target.innerHTML = `<section class="conversation-start"><div><div class="conversation-start__mark" aria-hidden="true"><img src="/capability/assets/icons/optionhelper-app-icon-tile-light.svg" alt=""></div><h2>今天想研究什么？</h2><p class="conversation-start__copy">从一个问题、一份条款，或一个投资想法开始。</p><div class="conversation-starters"><button class="conversation-starter" type="button" data-starter-prompt="我想了解一种期权产品的收益与风险，请帮我从产品特点开始。"><strong>了解产品</strong><span>了解收益机制、主要风险与适用场景。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请根据我的标的、期限和风险偏好筛选合适的期权结构。"><strong>筛选结构</strong><span>结合市场观点与投资偏好，比较合适的结构。</span></button><button class="conversation-starter" type="button" data-starter-prompt="我想为已有产品定价或回测，请帮我确认需要的条款与数据。"><strong>定价与回测</strong><span>基于产品条款，测算价格与历史表现。</span></button><button class="conversation-starter" type="button" data-starter-prompt="请把当前任务已有的研究结果整理成报告。"><strong>生成报告</strong><span>将研究结果整理成可编辑、可导出的报告。</span></button></div></div></section>`;
     return;
   }
@@ -1775,25 +1874,51 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
       break;
     }
   }
-  const previousReasoning = [...target.querySelectorAll(".assistant-reasoning")];
-  const rendered = messages.map((entry, index) => createConversationMessage(entry, {
-    ...options,
-    questionActive: index === activeQuestionIndex,
-    questionAnswer: messages[index + 1]?.role === "user" ? String(messages[index + 1].content || "") : "",
-  }));
-  for (const article of rendered) {
-    for (const next of article.querySelectorAll(".assistant-reasoning")) {
-      const text = reasoningControllers.get(next)?.body.textContent;
-      const index = previousReasoning.findIndex(node => reasoningControllers.get(node)?.body.textContent === text);
-      if (index < 0) continue;
-      const [previous] = previousReasoning.splice(index, 1);
-      reasoningControllers.get(next)?.destroy();
-      reasoningControllers.get(previous)?.update(text, false);
-      next.replaceWith(previous);
+  const conversationId = options.conversationId;
+  const previousId = conversationIds.get(target);
+  const sameConversation = conversationId != null && previousId === conversationId;
+  const previousChildren = [...target.children];
+  const previousMessages = sameConversation ? previousChildren.filter(node => messageSignatures.has(node)) : [];
+  const rendered = messages.map((entry, index) => {
+    const questionActive = index === activeQuestionIndex;
+    const hasQuestion = Array.isArray(entry?.content_blocks) && entry.content_blocks.some(block => block?.type === "question");
+    const questionAnswer = hasQuestion && messages[index + 1]?.role === "user" ? String(messages[index + 1].content || "") : "";
+    const signature = conversationId == null ? null : JSON.stringify([entry, questionActive, questionAnswer, options.questionInComposer]);
+    const previous = previousMessages[index];
+    if (previous && messageSignatures.get(previous) === signature) return previous;
+    const article = createConversationMessage(entry, { ...options, questionActive, questionAnswer });
+    if (signature !== null) messageSignatures.set(article, signature);
+    return article;
+  });
+  const retained = new Set(rendered);
+  const previousScrollTop = target.scrollTop;
+  const newArticles = rendered.filter(article => article.parentNode !== target);
+  if (newArticles.length && (previousId == null || sameConversation)) {
+    const previousReasoning = previousChildren.filter(node => !retained.has(node))
+      .flatMap(node => [...node.querySelectorAll(".assistant-reasoning")]);
+    for (const article of newArticles) {
+      for (const next of article.querySelectorAll(".assistant-reasoning")) {
+        const text = reasoningControllers.get(next)?.body.textContent;
+        const index = previousReasoning.findIndex(node => reasoningControllers.get(node)?.body.textContent === text);
+        if (index < 0) continue;
+        const [previous] = previousReasoning.splice(index, 1);
+        reasoningControllers.get(next)?.destroy();
+        reasoningControllers.get(previous)?.update(text, false);
+        next.replaceWith(previous);
+      }
     }
   }
-  const previousScrollTop = target.scrollTop;
-  target.replaceChildren(...rendered);
+  if (conversationId != null) conversationIds.set(target, conversationId);
+  else conversationIds.delete(target);
+  // Leave retained articles attached so focus, disclosure and selection survive a refresh.
+  for (const node of [...target.childNodes]) {
+    if (!retained.has(node)) node.remove();
+  }
+  let cursor = target.firstChild;
+  for (const article of rendered) {
+    if (article === cursor) cursor = cursor.nextSibling;
+    else target.insertBefore(article, cursor);
+  }
   if (!target._conversationScroll?.refresh({ previousScrollTop })) target.scrollTop = target.scrollHeight;
 }
 
@@ -1833,6 +1958,7 @@ export function renderReports(target, reports) {
         const caption = document.createElement("span");
         caption.className = "report-meta";
         caption.textContent = artifactTitle;
+        caption.title = artifactTitle;
         label.append(caption);
         card.append(label);
       }
@@ -1861,16 +1987,6 @@ export function renderReports(target, reports) {
 
 export function taskIdFromLocation() {
   return new URLSearchParams(location.search).get("task") || "";
-}
-
-export function setTaskLocation(taskId, extra = {}) {
-  const next = new URL(location.href);
-  next.searchParams.set("task", taskId);
-  Object.entries(extra).forEach(([key, value]) => {
-    if (value) next.searchParams.set(key, value);
-    else next.searchParams.delete(key);
-  });
-  history.replaceState(null, "", next);
 }
 
 // Motion follows committed UI state. Re-entry cancels the prior animation.
