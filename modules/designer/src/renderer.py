@@ -122,7 +122,9 @@ def _number_text(value: int | float | str, digits: int = 2) -> str:
         mantissa, exponent = f"{numeric:.2e}".split("e")
         rendered_mantissa = _mathematical_minus(mantissa.rstrip("0").rstrip("."))
         return f"{rendered_mantissa}×10{str(int(exponent)).translate(_SUPERSCRIPT_DIGITS)}"
-    rendered = f"{numeric:,.{digits}f}".rstrip("0").rstrip(".")
+    rendered = f"{numeric:,.{digits}f}"
+    if digits:
+        rendered = rendered.rstrip("0").rstrip(".")
     return "0" if rendered in {"-0", "-0.0"} else _mathematical_minus(rendered)
 
 
@@ -174,13 +176,21 @@ def display_text(value: Any, value_format: Any = "number", *, digits: int = 2) -
 
 
 
-def chart_axis_precision(values: Sequence[Any], value_format: Any = "number") -> int:
+def chart_axis_precision(values: Sequence[Any], value_format: Any = "number", *, axis_name: Any = None) -> int:
     """Keep adjacent ticks distinguishable without printing raw float tails."""
     numbers = sorted({float(value) for value in values if isinstance(value, (int, float))
                       and not isinstance(value, bool) and math.isfinite(value)})
     if len(numbers) < 2:
         return 2
     step = min(right - left for left, right in zip(numbers, numbers[1:]))
+    title = str(axis_name or "")
+    if (
+        step >= 1 and numbers[0] >= 100
+        and all(type(value) in (int, float) and math.isfinite(value) for value in values)
+        and re.search(r"价格|现价|股价|执行价|参考价|现货价|点位", title)
+        and not re.search(r"%|％|比例|百分比|比值|年|日期|时间|代码|标识", title)
+    ):
+        return 0
     if str(value_format or "").lower() == "percent":
         step *= 100
     return min(6, max(2, math.ceil(-math.log10(step))))
@@ -191,6 +201,33 @@ def chart_category(value: Any, axis_name: Any, *, digits: int = 2) -> str:
     if re.search(r"年|日期|时间|代码|标识", str(axis_name or "")):
         return str(value if value is not None else "")
     return display_text(value, digits=digits)
+
+
+def numeric_line_axis(values: Sequence[Any], axis_name: Any) -> tuple[list[float], list[tuple[float, float]]] | None:
+    """Return positions for every observation and a short list of labelled ticks."""
+
+    if len(values) < 2 or re.search(r"年|日期|时间|代码|标识", str(axis_name or "")):
+        return None
+    if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+        return None
+    if any(right <= left for left, right in zip(values, values[1:])):
+        return None
+    start, end = values[0], values[-1]
+    span = end - start
+    if not math.isfinite(span):
+        return None
+    positions = [(value - start) / span for value in values]
+    if len(values) <= 5:
+        return positions, list(zip(values, positions))
+    power = 10.0 ** math.floor(math.log10(span) - math.log10(4))
+    if power:
+        for factor in (1, 2, 2.5, 5, 10):
+            step = power * factor
+            first, last = math.ceil(start / step), math.floor(end / step)
+            if 2 <= last - first + 1 <= 5:
+                ticks = [index * step for index in range(first, last + 1)]
+                return positions, [(value, (value - start) / span) for value in ticks]
+    return positions, [(start, 0.0), (end, 1.0)]
 
 
 def display_basis(row: Mapping[str, Any]) -> str:
@@ -1178,6 +1215,10 @@ def render_payoff(data: dict[str, Any], input_dir: Path) -> str:
     formulas_html = comparison_formula_grid(module)
     if formulas_html:
         blocks.append(formulas_html)
+    break_even = module.get("expiry_break_even_ratio")
+    if type(break_even) in (int, float) and math.isfinite(break_even):
+        level = esc_rendered(display_text(break_even, "percent"))
+        blocks.append(f'<p>到期盈亏平衡：标的到期价格为期初参考价的{level}，合同净损益为零。</p>')
     scenarios = []
     for item in as_list(module.get("scenarios")):
         row = as_dict(item)
@@ -1239,7 +1280,9 @@ def render_pricing(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
     return "".join(block for block in blocks if block)
 
 
-def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
+def render_backtest(
+    data: dict[str, Any], charts: list[dict[str, Any]], *, risk_notes: Sequence[Any] = (),
+) -> str:
     module = as_dict(data.get("backtest"))
     status = text(module.get("status") or "pending").lower()
     comparison_view = bool(module.get("comparison_view"))
@@ -1260,13 +1303,20 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
             ledger.append(f'<div><dt>入场规则</dt><dd>{esc(entry_rule)}</dd></div>')
         blocks.append('<dl class="identity-ledger">' + "".join(ledger) + "</dl>")
     primary_rows = backtest_primary_rows(module)
-    blocks.append(metric_strip(primary_rows, show_basis=True))
-    remaining_metrics = [as_dict(row) for row in as_list(module.get("metrics"))
-                         if as_dict(row) not in primary_rows]
+    blocks.append(metric_strip(primary_rows, distinct_notes=True))
+    remaining_metrics = [row for row in as_list(module.get("metrics"))
+                         if isinstance(row, dict) and row not in primary_rows]
     if remaining_metrics:
-        blocks.append(simple_table(remaining_metrics,
-                                   [("label", "指标"), ("value", "统计值")],
-                                   "回测统计", "result-table result-table--backtest"))
+        columns = [("label", "指标"), ("value", "统计值")]
+        shown: set[str] = set()
+        stats = []
+        for row in remaining_metrics:
+            basis = display_basis(row)
+            stats.append({**row, "basis": "" if basis in shown else basis})
+            shown.add(basis)
+        if any(row["basis"] for row in stats):
+            columns.append(("basis", "口径"))
+        blocks.append(simple_table(stats, columns, "回测统计", "result-table result-table--backtest"))
     backtest_parameters = as_list(as_dict(data.get("parameters")).get("backtest_input"))
     if backtest_parameters:
         backtest_parameter_table = parameter_table(backtest_parameters, "回测参数")
@@ -1311,7 +1361,6 @@ def render_backtest(data: dict[str, Any], charts: list[dict[str, Any]]) -> str:
         if rows:
             tables.append({**table, "rows": rows})
     blocks.append(detail_tables(tables))
-    risk_notes = as_list(as_dict(data.get("risk")).get("limitations")) if "risk" in as_list(data.get("sections")) else []
     blocks.append(item_list([note for note in as_list(module.get("limitations")) if note not in risk_notes]))
     return "".join(block for block in blocks if block)
 
@@ -1335,6 +1384,15 @@ def render_parameters(data: dict[str, Any], *, section_title: str = "") -> str:
     return visible + detail_tables(as_list(module.get("detail_tables")))
 
 
+def _visible_risk_limitations(data: Mapping[str, Any]) -> list[Any]:
+    return [
+        item for item in as_list(as_dict(data.get("risk")).get("limitations"))
+        if "configured_paths" not in text(item)
+        and "固定路径数精度状态" not in text(item)
+        and "分支覆盖存在额外限制" not in text(item)
+    ]
+
+
 def render_risk(data: dict[str, Any]) -> str:
     module = as_dict(data.get("risk"))
     items = item_list(as_list(module.get("items")), "risk-list")
@@ -1344,12 +1402,7 @@ def render_risk(data: dict[str, Any]) -> str:
     suitability_block = (f"<h3>适用条件</h3>{suitable}" if suitable else "") + (f"<h3>不适用情形</h3>{not_suitable}" if not_suitable else "")
     missing_analysis = [label for key, label in (("payoff", "收益结构"), ("pricing", "估值定价"), ("backtest", "历史回测"))
                         if text(as_dict(data.get(key)).get("status")).lower() == "not_run"]
-    limitation_items = [
-        item for item in as_list(module.get("limitations"))
-        if "configured_paths" not in text(item)
-        and "固定路径数精度状态" not in text(item)
-        and "分支覆盖存在额外限制" not in text(item)
-    ]
+    limitation_items = _visible_risk_limitations(data)
     if missing_analysis:
         limitation_items.append("本次未运行" + "、".join(missing_analysis) + "，相关结论尚未验证。")
     limitations = item_list(limitation_items)
@@ -1464,19 +1517,20 @@ def render_html(
     report_theme = load_report_theme(config)
     design_system = build_design_system()
     charts: list[dict[str, Any]] = []
+    section_definition = section_definition or tuple(
+        (key, SECTION_TITLES[key], key) for key in SECTION_ORDER
+    )
+    risk_notes = _visible_risk_limitations(payload) if any(key == "risk" for _, _, key in section_definition) else []
     renderers = {
         "recommendation": lambda: render_recommendation(payload),
         "payoff": lambda: render_payoff(payload, input_dir),
         "pricing": lambda: render_pricing(payload, charts),
-        "backtest": lambda: render_backtest(payload, charts),
+        "backtest": lambda: render_backtest(payload, charts, risk_notes=risk_notes),
         "risk": lambda: render_risk(payload),
         "conclusion": lambda: render_conclusion(payload),
         "parameters": lambda: render_parameters(payload),
         "supplemental": lambda: "",
     }
-    section_definition = section_definition or tuple(
-        (key, SECTION_TITLES[key], key) for key in SECTION_ORDER
-    )
     appended_content = appended_content or {}
     sections = []
     for section_key, section_title, key in section_definition:
@@ -1560,6 +1614,9 @@ def render_html(
         if text(value)
     )
     echarts_head = f'<script src="{esc(echarts_path)}" defer></script>' if charts else ""
+    if charts:
+        presentation_source = config.chart_presentation_path.read_text(encoding="utf-8")
+        echarts_head += "<script>" + presentation_source.replace("</script", "<\\/script") + "</script>"
     if any(chart.get("type") == "surface" for chart in charts):
         # Both report modes use the workbench's locked offline Plotly runtime.
         for path in config.surface_runtime_paths:
@@ -1588,9 +1645,6 @@ function publicNumber(value, valueFormat, digits = 2) {
   }
   return mathematicalSign(new Intl.NumberFormat('zh-CN', {maximumFractionDigits: digits}).format(Object.is(number, -0) ? 0 : number)) + suffix;
 }
-function publicCategory(value, axisName, digits = 2) {
-  return /年|日期|时间|代码|标识/.test(String(axisName || '')) ? String(value ?? '') : publicNumber(value, 'number', digits);
-}
 function axisPrecision(values, format) {
   const numbers = [...new Set(values.filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number))].sort((a,b) => a-b);
   if (numbers.length < 2) return 2;
@@ -1613,28 +1667,25 @@ function renderChart(spec) {
   const hasLegend = !isHeatmap && series.length > 1;
   const chart = echarts.init(el, null, {renderer: spec.type === 'surface' ? 'canvas' : 'svg'});
   const labelStyle = {color: chartTheme.axis.label, fontSize: chartTheme.textStyle.fontSize, hideOverlap: true, margin: 12};
-  const categoryAxis = (values, name) => {
-    const digits = axisPrecision(values, 'number');
-    const longestLabel = Math.max(0, ...values.map(value => String(value ?? '').length));
-    const labelRotation = values.length > 12 || longestLabel > 10 ? 32 : 0;
-    return ({
-    type: 'category', name: name || '', nameLocation: 'middle', nameGap: 38, data: values,
+  const presentation = window.OptionHelperChartPresentation;
+  const axisStyle = {
+    nameGap: 35,
     axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
     axisTick: {show: true, alignWithLabel: true, interval: 'auto', lineStyle: {color: chartTheme.axis.line}},
-    axisLabel: {...labelStyle, interval: 'auto', rotate: labelRotation,
-      formatter: value => publicCategory(value, name, digits)}
-    });
+    axisLabel: labelStyle,
   };
   if (isHeatmap) {
     const values = spec.data.map(item => Number(item[2])).filter(Number.isFinite);
+    const formatX = presentation.axisFormatter(spec.x, spec.x_axis_name, 4);
+    const formatY = presentation.axisFormatter(spec.y, spec.y_axis_name, 4);
     const escapeLabel = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     chart.setOption({
       animation: false, color: palette,
       tooltip: {position: 'top', confine: true, formatter: item =>
-        `${escapeLabel(spec.x_axis_name || '横轴')}：${escapeLabel(publicCategory(spec.x[item.data[0]], spec.x_axis_name, 4))}<br>${escapeLabel(spec.y_axis_name || '纵轴')}：${escapeLabel(publicCategory(spec.y[item.data[1]], spec.y_axis_name, 4))}<br>${escapeLabel(spec.z_axis_name || '数值')}：${escapeLabel(publicNumber(item.data[2], spec.value_format, 4))}${escapeLabel(spec.value_suffix || '')}`},
+        `${escapeLabel(spec.x_axis_name || '横轴')}：${escapeLabel(formatX(spec.x[item.data[0]]))}<br>${escapeLabel(spec.y_axis_name || '纵轴')}：${escapeLabel(formatY(spec.y[item.data[1]]))}<br>${escapeLabel(spec.z_axis_name || '数值')}：${escapeLabel(publicNumber(item.data[2], spec.value_format, 4))}${escapeLabel(spec.value_suffix || '')}`},
       grid: {left: 42, right: 24, top: 30, bottom: 105, containLabel: true},
-      xAxis: categoryAxis(spec.x, spec.x_axis_name),
-      yAxis: {...categoryAxis(spec.y, spec.y_axis_name), nameGap: 55},
+      xAxis: presentation.categoryAxis(spec.x, spec.x_axis_name, axisStyle),
+      yAxis: presentation.categoryAxis(spec.y, spec.y_axis_name, {...axisStyle, nameGap: 55}),
       visualMap: {min: Math.min(...values), max: Math.max(...values), calculable: false,
         orient: 'horizontal', left: 'center', bottom: 4,
         formatter: value => publicNumber(value, spec.value_format),
@@ -1647,14 +1698,15 @@ function renderChart(spec) {
     const yValues = series.flatMap(item => item.data).filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number);
     const span = (Math.max(...yValues) - Math.min(0, ...yValues)) / 4;
     const yDigits = axisPrecision([0, span], spec.value_format);
+    const horizontal = presentation.cartesianXAxis(spec, axisStyle);
     chart.setOption({
       animation: false, color: palette,
       tooltip: {trigger: 'axis', confine: true, valueFormatter: value => `${publicNumber(value, spec.value_format, Math.max(4, yDigits))}${spec.value_suffix || ''}`},
       legend: {show: hasLegend, type: 'scroll', top: 2, textStyle: chartTheme.textStyle},
-      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 78, containLabel: true},
-      xAxis: categoryAxis(spec.x, spec.x_axis_name),
+      grid: {left: 24, right: 28, top: hasLegend ? 60 : 35, bottom: 59, containLabel: true},
+      xAxis: horizontal.axis,
       yAxis: {type: 'value', name: spec.y_axis_name || '', splitNumber: 4,
-        nameTextStyle: {color: chartTheme.axis.label},
+        nameTextStyle: {color: chartTheme.axis.label, align: 'left'},
         axisLine: {show: true, lineStyle: {color: chartTheme.axis.line, width: 1.2}},
         axisTick: {show: true, lineStyle: {color: chartTheme.axis.line}},
         axisLabel: {...labelStyle, formatter: value => publicNumber(value, spec.value_format, yDigits)},
@@ -1662,7 +1714,7 @@ function renderChart(spec) {
       series: series.map((item, index) => ({name: item.name, type, smooth: false,
         symbol: type === 'line' ? symbols[index % symbols.length] : 'none',
         showSymbol: type === 'line' && points <= 24, symbolSize: 5, barMaxWidth: 42,
-        data: item.data, itemStyle: {color: palette[index % palette.length]},
+        ...horizontal.seriesCoordinates(item.data), itemStyle: {color: palette[index % palette.length]},
         lineStyle: {width: 2, type: lineTypes[index % lineTypes.length]}}))
     });
   }
