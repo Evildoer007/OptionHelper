@@ -29,6 +29,7 @@ from .interaction import (
     delivery_preferences_from_text,
     question_covered_by_confirmed_terms,
     merge_confirmed_constraints,
+    named_comparison_product_ids,
     requested_candidate_count_from_text,
     requested_comparison_products,
 )
@@ -471,15 +472,23 @@ class RecommenderService:
             raise RecommendationInputRequired("research_scope", framing["next_question"])
         evidence = self._retrieve(case, framing.get("research_queries", ()), audit)
         dependencies = _requested_research_modules(case, self._research)
-        branch_limit = min(_requested_candidate_count(case), self.config.max_candidates)
-        if dependencies:
-            branch_limit = min(branch_limit, max(1, depth_policy(case.research_depth)["calculations"] // (2 * len(dependencies))))
+        comparison_scope = requested_comparison_products(case.prompt, evidence)
+        budget = depth_policy(case.research_depth)["calculations"]
+        # For named products, schedule one complete set of calculations across
+        # the independent branches before spending on duplicate evaluations.
+        split_comparison = bool(comparison_scope and len(comparison_scope) <= self.config.max_candidates
+                                and len(comparison_scope) * len(dependencies) <= budget)
+        branch_limit = len(comparison_scope) if split_comparison else min(_requested_candidate_count(case), self.config.max_candidates)
+        if dependencies and not split_comparison:
+            branch_limit = min(branch_limit, max(1, budget // (2 * len(dependencies))))
         shared = {
             "case": case.to_dict(),
             "framing": dict(framing),
             "evidence": [item.to_dict(include_excerpt=True) for item in evidence],
             "max_candidates": branch_limit,
+            **({"comparison_scope": comparison_scope} if split_comparison else {}),
         }
+        allocation = dict(zip(sorted(comparison_scope), ("Matcher", "Hedger") * len(comparison_scope)))
         for role in ("Matcher", "Hedger"):
             self._research.restrict_role(role, ())
         proposal_input = {
@@ -512,7 +521,8 @@ class RecommenderService:
             self._research.register(branch_candidates)
             self._research.restrict_role(role, branch_candidates)
             for candidate in branch_candidates:
-                if candidate.library_status == "ready" and dependencies:
+                if (candidate.library_status == "ready" and dependencies
+                    and (not split_comparison or allocation.get(candidate.product_id) == role)):
                     self._research.evaluate({"candidate_id": candidate.candidate_id, "modules": list(dependencies),
                         "round_no": 1, "question": "取得用户明确要求的研究结果，供独立角色复核"}, role=role)
             permitted = {item["evidence_id"] for item in self._research.catalog_for_validation(
@@ -524,7 +534,8 @@ class RecommenderService:
                 "registered_candidates":[item.to_dict() for item in branch_candidates],
                 "research":{**self._research.context(),"candidates":[item.to_confirmation_dict() for item in branch_candidates]},
                 "evidence_results": self._research.read(role=role),
-                "rule":"先核对已完成的本分支计算，不重复计算。更新proposals说明和缺项，保留已登记term_overrides及真实未知项，不读取另一角色意见。",
+                "rule":"先核对已完成的本分支计算，不重复计算。更新proposals说明和缺项，保留已登记term_overrides及真实未知项，不读取另一角色意见。"
+                       + ("本分支只预计算分配到的产品，其余已登记产品做条款复核；待汇总后由Moderator核对两边计算。" if split_comparison else ""),
             }
         branches.update(runner.run_named(research_requests))
         self._research.share_evidence()
@@ -676,7 +687,7 @@ class RecommenderService:
             **dict(structurer), "evaluation_plan": [
                 item for item in structurer.get("evaluation_plan", ()) if item.get("product_id") in ready_products
             ],
-        }, required_modules=dependencies))
+        }, required_modules=dependencies, blocked_modules=self._research.blocked_modules))
         accepted: dict[str, RecommendationCandidate] = {}
         reviewer_feedback = None
         while True:
@@ -770,7 +781,8 @@ class RecommenderService:
                 "host_results": host_results, "research": self._research.context(),
                 "rule": "处理Trader或Reviewer的具体问题；返回evaluation_plan，每项含product_id、modules、term_overrides。保持用户硬约束。",
             })
-            current_plan = loop.plan_round(_structurer_loop_plan(loop, redesign, required_modules=dependencies))
+            current_plan = loop.plan_round(_structurer_loop_plan(loop, redesign, required_modules=dependencies,
+                                                               blocked_modules=self._research.blocked_modules))
 
     def _finalize_reviewed_candidates(self, case, selected, runner, research, evidence,
                                       round_no, *, allow_narrative_repair):
@@ -924,11 +936,14 @@ class RecommenderService:
         specified = _resolve_role_clarification(specified, case.confirmed_constraints, audit, "Specifier")
         if specified.get("next_question"):
             raise RecommendationInputRequired("ranking_preferences", specified["next_question"])
+        from .interaction import requests_ascending_expiry_loss
         spec = bind_confirmed_risk_constraints(
             parse_specifier_ranking_spec(specified.get("ranking_spec", {})), case.confirmed_constraints)
         # A requested contractual loss order cannot be silently replaced by
         # the minimum of a finite historical sample.
-        if re.search(r"(?:到期|合同)(?:结算)?最大(?:亏损|损失)", case.prompt):
+        if requests_ascending_expiry_loss(case.prompt):
+            spec = replace(spec, sort_keys=({"metric": "contract_loss_bound", "direction": "asc", "missing_policy": "exclude"},))
+        elif re.search(r"(?:到期|合同)(?:结算)?最大(?:亏损|损失)", case.prompt):
             spec = replace(spec, sort_keys=tuple({**dict(key), "metric": "contract_loss_bound"}
                 if key["metric"] == "max_loss_contract_settlement_return" else key for key in spec.sort_keys))
         evidence = self._retrieve(case, specified.get("research_queries", ()), audit)
@@ -1054,7 +1069,8 @@ class RecommenderService:
     ) -> tuple[Any, ...]:
         if self.knowledge_port is None:
             raise RecommenderUnavailable("结构推荐需要Knowledger正式端口")
-        queries = _strings(raw_queries) or _research_queries(case)
+        named_products = named_comparison_product_ids(case.prompt)
+        queries = tuple(dict.fromkeys((*named_products, *(_strings(raw_queries) or _research_queries(case)))))
         evidence = retrieve_evidence(
             self.knowledge_port,
             catalog_version=case.catalog_version,
@@ -1065,6 +1081,11 @@ class RecommenderService:
             if tuple(queries) != fallback:
                 evidence = retrieve_evidence(self.knowledge_port, catalog_version=case.catalog_version, queries=fallback)
                 queries = tuple(dict.fromkeys((*queries, *fallback)))
+        if named_products:
+            verified = {item.product_id for item in evidence}
+            if not set(named_products).issubset(verified):
+                raise RecommendationInputRequired("research_scope", "本次指定的结构中有产品资料未能核验，暂时无法完成两者的对比。")
+            evidence = tuple(item for item in evidence if item.product_id in named_products)
         audit.append(
             "evidence", "complete" if evidence else "empty", agent_role=None,
             input_value={"queries": queries},
@@ -1077,14 +1098,18 @@ class RecommenderService:
 
     def _enforce_user_risk_constraints(self, case, candidates, *, research_session=None):
         """All presets pass the same immutable-contract gate before delivery."""
+        from .interaction import requests_ascending_expiry_loss
         rules = confirmed_risk_constraints(case.confirmed_constraints)
-        if not candidates or not rules:
+        ordered = requests_ascending_expiry_loss(case.prompt)
+        if not candidates or not (rules or ordered):
             return tuple(candidates), ()
+        metric = "contract_loss_bound" if ordered else next(iter(rules))
         spec = RankingSpec(ranking_spec_id="confirmed-user-risk-limits", hard_constraints=rules,
-                           sort_keys=({"metric": next(iter(rules)), "direction": "asc", "missing_policy": "exclude"},),
+                           sort_keys=({"metric": metric, "direction": "asc", "missing_policy": "exclude"},),
                            tie_break_policy="candidate_id")
-        metric_sources = {key: "contract_terms" for key in rules}
+        metric_sources = {key: "contract_terms" for key in (*rules, metric)}
         accepted, rejected = [], []
+        observed_loss = {}
         for candidate in candidates:
             if candidate.library_status != "ready":
                 # Retain research-only proposals without claiming risk validation.
@@ -1108,6 +1133,8 @@ class RecommenderService:
             metrics = _ranking_metrics(row, metric_sources, records)
             ranked = rank_candidates(spec, (candidate,), {candidate.candidate_id: metrics})
             if ranked.ranked_candidates:
+                if ordered:
+                    observed_loss[candidate.candidate_id] = metrics["contract_terms"][metric]
                 accepted.append(replace(candidate, evaluation_records=records,
                     module_run_refs=tuple(record.module_run_ref for record in records if record.module_run_ref),
                     module_statuses={record.module: record.status for record in records}))
@@ -1115,6 +1142,8 @@ class RecommenderService:
                 reasons = [reason for exclusion in ranked.exclusions for reason in exclusion.reasons]
                 rejected.append({"candidate_id": candidate.candidate_id, "product_id": candidate.product_id,
                                  "source": "confirmed_user_constraints", "reason": ";".join(reasons)})
+        if ordered:
+            accepted.sort(key=lambda item: observed_loss.get(item.candidate_id, float("inf")))
         return tuple(accepted), tuple(rejected)
 
     def _candidate_set(
@@ -1361,7 +1390,7 @@ def _accepting_reviews(proposals: object) -> list[dict[str, Any]]:
     return reviews
 
 
-def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any], *, required_modules=()) -> Mapping[str, Any]:
+def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any], *, required_modules=(), blocked_modules=()) -> Mapping[str, Any]:
     raw_plans = output.get("evaluation_plan", ())
     if isinstance(raw_plans, (str, bytes)) or not isinstance(raw_plans, Sequence):
         raise RecommendationValidationError("Structurer.evaluation_plan必须为数组")
@@ -1380,7 +1409,8 @@ def _structurer_loop_plan(loop: ProductTraderLoop, output: Mapping[str, Any], *,
         "proposals": [
             {
                 "candidate_id": state.candidate.candidate_id,
-                "evaluation_plan": list(dict.fromkeys((*plans[product_id].get("modules", ()), *required_modules))),
+                "evaluation_plan": [module for module in dict.fromkeys((*plans[product_id].get("modules", ()), *required_modules))
+                                    if module not in blocked_modules],
                 "term_overrides": dict(plans[product_id].get("term_overrides", {})),
             }
             for product_id, state in states.items()
@@ -1471,6 +1501,9 @@ def _research_queries(case: RecommendationCase) -> tuple[str, ...]:
 
 
 def _requested_candidate_count(case: RecommendationCase) -> int:
+    named_products = named_comparison_product_ids(case.prompt)
+    if named_products:
+        return len(named_products)
     value = case.confirmed_constraints.get("_requested_candidate_count")
     if value is None:
         value = requested_candidate_count_from_text(case.prompt) or DEFAULT_REQUESTED_CANDIDATE_COUNT
@@ -1539,6 +1572,11 @@ def _bind_requested_candidate_count(case: RecommendationCase, count: int) -> Rec
 def _prepare_recommendation_case(case: RecommendationCase) -> RecommendationCase:
     count = _requested_candidate_count(case)
     constraints = merge_confirmed_constraints(case.confirmed_constraints, (case.prompt,))
+    named_products = named_comparison_product_ids(case.prompt)
+    if named_products:
+        constraints["comparison_product_ids"] = list(named_products)
+    else:
+        constraints.pop("comparison_product_ids", None)
     constraints["_requested_candidate_count"] = count
     prepared = replace(case, confirmed_constraints=constraints)
     return replace(prepared, requested_outputs=_requested_outputs(prepared))
