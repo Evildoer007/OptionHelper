@@ -105,8 +105,21 @@ html:not([data-optionhelper-app-hosted="true"])::-webkit-scrollbar-thumb:hover, 
 .button-primary{color:var(--color-on-brand)}
 
 .source-detail summary{cursor:default;color:var(--muted);font-size:11px}.source-detail p{padding-top:8px}
-.source-panel .optionhelper-choice .choice-trigger__value,.run-row .optionhelper-choice .choice-trigger__value{display:block!important;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis}
-.source-panel .optionhelper-choice .choice-trigger,.run-row .optionhelper-choice .choice-trigger{min-height:34px!important;height:34px}
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="reporter"] body
+  :is(.source-panel, .run-row) .oh-choice > .oh-choice__trigger {
+  min-height: 34px;
+  height: 34px;
+  padding-block: 0;
+  font: var(--oh-type-control);
+}
+html[data-optionhelper-app-hosted="true"][data-optionhelper-module="reporter"] body
+  :is(.source-panel, .run-row) .oh-choice__trigger > .oh-choice__value {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
 .top-actions .button-icon{width:32px;min-width:32px;padding:0}.button-icon svg{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 #generateButton:disabled{background:var(--color-ground)!important;border-color:var(--line)!important;color:var(--muted)!important}
 #moduleGroup label:has(input:disabled){color:var(--muted);opacity:.7}
