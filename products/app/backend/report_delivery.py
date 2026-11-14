@@ -14,12 +14,15 @@ from .errors import UserActionError, ValidationError
 
 _TEMPLATE = re.compile(r'(?<![A-Za-z])(multireport|multicard|report|card|quote)(?![A-Za-z])', re.I)
 
+_CREATE_DOCUMENT = r'生成|出(?:一份|一版|个|份)?(?=\s*(?:一|完整|详细|研究|对比|专业|HTML|PDF|Word|DOCX|简报|报告|报价))|写(?:一份|个|成|一版)?|撰写|编写|做成|做一(?:份|版)|做个|制作|整理成|交付'
+_DELIVERY_ACTION = _CREATE_DOCUMENT + r'|导出|下载|给我|给一|再给|给(?=\s*(?:完整|详细|研究|对比|专业|HTML|PDF|Word|DOCX|简报|报告|报价))|改成|转成|输出|提供'
 _NEGATED_DELIVERY = re.compile(
     r'(?:不需要|不必|不要|不用|无需|暂不|先不|不)(?:再|重新)?'
     r'(?:(?:计算|定价|估值|回测)(?:、|或|和|及|与|以及))*'
-    r'(?:生成|导出|下载|输出|制作|提供|给我|报告|简报|报价表|报价单|html|pdf|word|docx)', re.I)
+    rf'(?:{_DELIVERY_ACTION}|报告|简报|报价表|报价单|html|pdf|word|docx)', re.I)
 
-_ACTION = re.compile(r'生成|导出|下载|给我|给一|再给|改成|转成|整理成|输出|制作|做一')
+_ACTION = re.compile(_DELIVERY_ACTION, re.I)
+_NEW_DOCUMENT_ACTION = re.compile(rf'(?:{_CREATE_DOCUMENT}).{{0,60}}(?:报告|简报|报价)', re.I)
 _FORMAT = re.compile(r'(?<![A-Za-z])(html|pdf|word|docx)(?![A-Za-z])', re.I)
 _DOCUMENT_NAME = re.compile(r'报价表|报价单|参考报价|简报|报告')
 _PUBLIC_TEMPLATE = {'报告': 'report', '简报': 'card', '报价表': 'quote', '报价单': 'quote', '参考报价': 'quote'}
@@ -66,7 +69,7 @@ def _affirmative_delivery_text(text):
         if re.match(r'\s*(?:为什么|为何|怎么|如何)', clause):
             clauses.append(clause)
         else:
-            clauses.extend(re.split(r'(?:并且|并|然后|同时|之后)(?=\s*(?:请|再|帮我)?(?:生成|导出|下载|输出|制作|整理成))', clause))
+            clauses.extend(re.split(rf'(?:并且|并|然后|同时|之后)(?=\s*(?:请|再|帮我)?(?:{_DELIVERY_ACTION}))', clause, flags=re.I))
     retained = []
     directed = False
     for raw in clauses:
@@ -152,23 +155,38 @@ def delivery_targets(request):
 
 
 def delivery_request(text):
+    from modules.recommender.interaction import named_comparison_product_ids
+
     original = str(text or '').strip()
     text = _affirmative_delivery_text(original)
     if text is None:
         return None
     mentions = _document_mentions(text)
     templates = list(dict.fromkeys(template for _start, _end, template in mentions))
-    if len(templates) <= 1 and re.search(r'(?:多|两|双|[2-9])(?:个|款|种)?(?:产品|结构)|(?:产品|结构)(?:横向)?对比', original):
-        mentions = [(start, end, 'multi'+kind if kind in {'card', 'report'} else kind) for start, end, kind in mentions]
+    comparison_document = re.search(r'(?:对比|比较|横向).{0,6}(?:报告|简报)', text)
+    single_document = re.search(
+        r'(?:(?:只|仅)(?:为|给|把|对)?[^，。；]{0,10}|(?:为|给|把))'
+        r'(?:首选|第一名|推荐项|优胜|入选|排名第一)(?:的)?[^，。；]{0,16}(?:报告|简报)', original)
+    comparison_requested = comparison_document or (not single_document and (
+        named_comparison_product_ids(original)
+        or re.search(r'(?:多|两|双|[2-9])(?:个|款|种|套|笔)?(?:产品|结构|合同|方案)|'
+                     r'(?:产品|结构)(?:横向)?对比|(?:刚才|前面|之前)(?:那|的)?两(?:套|笔|种|个)', original)
+    ))
+    if comparison_requested:
+        mentions = [(start, end, 'multi'+kind if kind in {'card', 'report'} and
+                     (len(templates) <= 1 or not _TEMPLATE.fullmatch(text[start:end])) else kind)
+                    for start, end, kind in mentions]
+        if not mentions:
+            mentions = [(len(text), len(text), 'multireport')]
     targets = _requested_document_targets(text, mentions)
     templates = list(dict.fromkeys(target['template'] for target in targets))
     formats = list(dict.fromkeys(target['format'] for target in targets))
     return {'template': templates[-1], 'templates': templates, 'multiple': len(templates) > 1,
             'explicit_templates': templates if mentions else [],
             'format': targets[-1]['format'], 'formats': formats, 'deliveries': targets,
-            'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text)) and not bool(re.search(
-                r'推荐|重新生成|多智能体|(?:继续|完成|重新).{0,20}(?:研究|分析)|'
-                r'(?:生成|制作|撰写|编写|整理).{0,80}(?:报告|简报|交付)', text))}
+            'export_only': bool(re.search(r'再给|改成|转成|导出|下载', text))
+            and not _NEW_DOCUMENT_ACTION.search(text) and not bool(re.search(
+                r'推荐|多智能体|(?:继续|完成|重新).{0,20}(?:研究|分析)', text))}
 
 
 def delivery_discussion_only(text):
@@ -232,7 +250,7 @@ def requested_analysis_modules(text):
     A negation applies to its named item/list, not the whole sentence: removing
     “无需回测” must leave “但需要定价” available for the positive check.
     """
-    patterns = {'payoffer': r'payoffer|收益分析|收益图',
+    patterns = {'payoffer': r'payoffer|收益分析|收益图|收益结构|收益区间|损益结构|盈亏平衡|最大亏损|最大损失',
                 'pricer': r'pricer|定价|估值', 'backtester': r'backtest(?:er)?|回测'}
     topic = (r'(?:backtester|backtest|payoffer|pricer|收益分析|收益图|'
              r'推荐|定价|估值|回测|行情|计算|金融判断)'
@@ -261,19 +279,23 @@ def existing_results_only(text):
     text = str(text or '')
     reuse = re.compile(
         r'(?:仅|只|直接|就)?(?:需|要)?(?:使用|复用|采用|整理|沿用|用)'
-        r'(?:本(?:任务|轮)(?:的)?)?(?:已有|现有|已完成|已计算)(?:的)?'
-        r'(?:计算|研究|分析)?结果')
+        r'(?:本(?:任务|轮)(?:的)?)?(?:已有|现有|已完成|已计算|刚算过|刚算好|刚才(?:算过|算的)|前面(?:算过|算的))'
+        r'(?:的)?(?:计算|研究|分析)?(?:结果|数据)')
     calculation = re.compile(
         r'(?:需要|要|请|重新|继续|补做|补充|再|执行|进行|运行|重跑)'
-        r'\s*(?:再|重新|继续)?(?:做|进行|执行|运行)?(?:计算|定价|估值|回测|收益分析)')
+        r'\s*(?:再|重新|继续)?(?:做|进行|执行|运行)?(?:重算|计算|定价|估值|回测|收益分析)')
     actions = []
     for pattern, kind in ((reuse, 'reuse'), (calculation, 'calculation')):
         for match in pattern.finditer(text):
             prefix = re.split(r'[，,。；;！？!?\n]|但是|但|而是|改为', text[:match.start()])[-1]
             negated = bool(re.search(
                 r'(?:不要|不用|无需|无须|不必|不需要|不想|不能|别|不)\s*(?:再|直接|仅|只)?\s*$', prefix))
+            if negated and kind == 'calculation' and re.search(r'回测|收益分析$', match[0]):
+                continue
             actions.append((match.end(), kind == 'reuse' and not negated
                             or kind == 'calculation' and negated))
+    actions.extend((match.end(), True) for match in re.finditer(
+        r'(?:不要|不用|无需|无须|不必|别|不)\s*(?:再|重新)?(?:重算|再算一遍)', text))
     return max(actions, default=(0, False), key=lambda row: row[0])[1]
 
 
@@ -283,7 +305,7 @@ def required_delivery_modules(text, template, *, has_recommendation=False):
     explicit = set(requested_analysis_modules(text))
     if template == 'quote':
         explicit.add('pricer')
-    draft = bool(re.search(r'(?<!不要)(?<!不生成)草稿|只(?:需|要).{0,8}(?:整理|文字)|(?:不|无需|不用|暂不)(?:需要|进行|执行|做)?计算', str(text)))
+    draft = _explicit_draft_request(text) or bool(re.search(r'只(?:需|要).{0,8}(?:整理|文字)', str(text)))
     if has_recommendation and template in {'card', 'report', 'multicard', 'multireport'} and not draft:
         explicit.update(('payoffer', 'pricer', 'backtester'))
     prohibited = blocked_research_modules(text)
@@ -435,6 +457,27 @@ class ReportDelivery:
             if not delivery_discussion_only(content) and decide_workflow(content).analysis_path != 'consultation':
                 break
         return None
+
+    def deliver_existing_results(self, identity, task_id, request):
+        """Use the stored calculations directly for an explicit reuse request."""
+        documents = []
+        response = {}
+        for target in delivery_targets(request):
+            if self.tasks.is_cancelled(identity, task_id):
+                response = {'status': 'cancelled', 'text': '交付已取消，已完成文件保留。'}
+                break
+            response = self.tools.call(identity, task_id, 'recommendation_delivery.run',
+                                       {'kind': target['template'], 'format': target['format']})
+            if response.get('document'):
+                documents.append(dict(response['document']))
+            if response.get('status') not in {'completed', 'succeeded'} or not response.get('document'):
+                break
+        text = response.get('text') or response.get('message') or '本任务尚无符合要求的已验证计算结果。'
+        output = {**response, 'text': text}
+        if documents:
+            output['documents'] = documents
+            output['_assistant_blocks'] = [{'type': 'text', 'text': text}, *documents]
+        return output
 
     def export_selection(self, identity, task_id, message):
         """Resolve existing files from this task without asking the model.
@@ -818,10 +861,13 @@ class ReportDelivery:
             stored = self.results.get_owned_report_run(identity, row['report_run_id'])
             frozen_request = stored.get('report_request') or {}
             selected_modules = (frozen_request.get('subject_ref') or {}).get('selected_modules')
+            required = dict(payoffer='payoff', pricer='pricing', backtester='backtest')
+            requested_modules = {required[name] for name in required_delivery_modules(
+                request.get('source_message', ''), target['template'], has_recommendation=True)}
             partial_coverage = (row.get('output_type') == 'report'
                 and frozen_request.get('manual_edit') is not True
                 and isinstance(selected_modules, list)
-                and not {'payoff', 'pricing', 'backtest'}.issubset(selected_modules))
+                and not requested_modules.issubset(selected_modules))
             if (partial_coverage or row.get('status') not in {'completed', 'succeeded'}) and label not in incomplete_sources:
                 incomplete_sources.append(label)
             try:
@@ -866,7 +912,8 @@ class ReportDelivery:
             message = context['source_message']
             report_ids = list(dict.fromkeys([*context.get('report_ids', []), *(report_ids or []), *([report_id] if report_id else [])]))
         if request['multiple'] or context and context.get('continued'):
-            return self._complete_document_batch(identity, task_id, request, response, report_ids or ([report_id] if report_id else []))
+            return self._complete_document_batch(identity, task_id, {**request, 'source_message': message},
+                                                 response, report_ids or ([report_id] if report_id else []))
         # Questions and failed/partial analyses are not report content. An existing
         # verified document can still be exported without rerunning its analysis.
         if not report_id and response.get('status', 'completed') != 'completed':
