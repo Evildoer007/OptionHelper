@@ -59,7 +59,7 @@ function abortError(reason: unknown): Error {
   return error
 }
 
-type PartialStreamError = Error & { partialBlocks?: readonly ContentBlock[] }
+type PartialStreamError = Error & { code?: unknown; partialBlocks?: readonly ContentBlock[] }
 
 /** Durable agent execution with Inbox, native tool continuation and bounded turns. */
 export class AgentRun {
@@ -349,7 +349,14 @@ export class AgentRun {
         return assembler
       } catch (error) {
         const code = error instanceof Error && error.name === "AbortError" ? "ABORT" : "TRANSPORT"
-        if (!shouldRetry(DEFAULT_RETRY_POLICY, code, attempt + 1, assembler.blocks().length > 0) || signal.aborted) {
+        const blocks = assembler.blocks()
+        // A broken reasoning-only stream has produced neither a public answer nor
+        // a tool request. Retry that request once with the same prior tool results.
+        const interrupted = error instanceof Error && (error as PartialStreamError).code === "ModelStreamInterrupted"
+        const retry = interrupted
+          ? attempt === 0 && blocks.every((block) => block.type === "reasoning")
+          : shouldRetry(DEFAULT_RETRY_POLICY, code, attempt + 1, blocks.length > 0)
+        if (signal.aborted || !retry) {
           if (error instanceof Error) (error as PartialStreamError).partialBlocks = assembler.interruptedBlocks()
           throw error
         }
