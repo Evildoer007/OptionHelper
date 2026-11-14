@@ -892,6 +892,13 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
         path_title = _text(raw.get("title") or f"路径{path_index}")
         axis = raw.get("axis") if isinstance(raw.get("axis"), Mapping) else {}
         axis_label = _text(axis.get("label") or axis.get("unit") or "横轴")
+        axis_unit = _text(axis.get("display_unit"))
+        if axis.get("unit") == "S_T" and axis_unit == "%":
+            axis_label = "到期标的价格（占期初参考价）"
+        returns_label = {
+            "gross_before_premium": "扣除期权费前的收益率",
+            "net_after_premium": "合同净收益率",
+        }.get(_text(raw.get("payoff_basis")), "收益率")
         segments = raw.get("scenario_segments")
         if not isinstance(segments, list) or not segments:
             raise ReporterError("reporter_payoff_facts路径缺少scenario_segments")
@@ -908,6 +915,9 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
             if lower_kind not in endpoint or upper_kind not in endpoint:
                 raise ReporterError("reporter_payoff_facts端点类型无效")
             lower_text, upper_text = _decimal_text(lower), _decimal_text(upper)
+            if axis_unit == "%":
+                lower_text += axis_unit
+                upper_text += axis_unit
             if lower_kind == "not_a_domain_boundary" and upper_kind == "not_a_domain_boundary":
                 condition = f"{axis_label}覆盖全部有效区间"
             elif upper_kind == "not_a_domain_boundary":
@@ -920,10 +930,12 @@ def _payoff_content(module: Mapping[str, Any]) -> dict[str, Any]:
                 left_bracket = "[" if lower_kind == "closed" else "("
                 right_bracket = "]" if upper_kind == "closed" else ")"
                 condition = f"{axis_label}∈{left_bracket}{lower_text},{upper_text}{right_bracket}"
+            if axis_unit == "次" and (lower_kind != "not_a_domain_boundary" or upper_kind != "not_a_domain_boundary"):
+                condition += "次"
             payoff_text = (
-                f"收益率为{_decimal_text(minimum)}%"
+                f"{returns_label}为{_decimal_text(minimum)}%"
                 if math.isclose(minimum, maximum, rel_tol=0.0, abs_tol=1e-12)
-                else f"图示范围内收益率为{_decimal_text(minimum)}%至{_decimal_text(maximum)}%，不代表合同收益上下限"
+                else f"图示范围内{returns_label}为{_decimal_text(minimum)}%至{_decimal_text(maximum)}%，不代表合同收益上下限"
             )
             scenarios.append({
                 "title": f"{path_title}·情景{segment_index}",
@@ -954,13 +966,33 @@ def _contract_initial_premium_percent(contract: Mapping[str, Any] | None) -> str
     return ""
 
 
-def _pricing_assumptions(pricing, market):
+def _pricing_assumptions(pricing: Mapping[str, Any], market: Mapping[str, Any]) -> list[str]:
     """Display frozen Pricer inputs without estimating or filling defaults."""
     assumptions = []
     requested = _text(market.get("requested_valuation_date"))
     effective = _text(market.get("valuation_date") or market.get("market_as_of_date"))
     if requested and effective and requested != effective:
-        assumptions.append(f"请求估值日为{requested}；实际估值与行情基准日为{effective}，采用该日已验证数据。")
+        assumptions.append(f"请求估值日为{requested}，实际估值日为{effective}。")
+    market_date = _text(market.get("market_as_of_date"))
+    if market_date and market_date != effective:
+        assumptions.append(f"行情基准日为{market_date}。")
+    ref = market.get("data_ref")
+    provider_id = _text(ref.get("provider")).lower().replace("_", "-") if isinstance(ref, Mapping) else ""
+    provider = {"ifind-http": "iFinD", "ifind": "iFinD", "tushare": "Tushare", "tinyshare": "Tinyshare"}.get(provider_id)
+    start, end = market.get("history_start_date"), market.get("history_end_date")
+    if start and end:
+        assumptions.append(f"{provider or '已绑定'}日线覆盖{start}至{end}。")
+    if isinstance(market.get("spot"), Mapping):
+        for asset, raw_spot in market["spot"].items():
+            spot = _safe_number(raw_spot)
+            if spot is None:
+                continue
+            if market.get("spot_input_source") == "manual":
+                assumptions.append(f"{asset}估值采用手动指定的标的价格{spot:,.4f}点。")
+            elif market.get("spot_input_source") == "market_close" and market_date:
+                assumptions.append(f"{asset}估值采用{market_date}的收盘价{spot:,.4f}点。")
+            else:
+                assumptions.append(f"{asset}估值采用的标的价格为{spot:,.4f}点。")
     rate = _safe_number(market.get("risk_free_rate"))
     if rate is not None:
         assumptions.append(f"无风险利率为{rate:.2%}。")
@@ -970,17 +1002,36 @@ def _pricing_assumptions(pricing, market):
             if _safe_number(number) is not None:
                 assumptions.append(f"{asset}股息率为{float(number):.2%}。")
     vols = market.get("volatility")
+    volatility_source = market.get("volatility_source")
     if isinstance(vols, Mapping):
         for asset, number in vols.items():
-            if _safe_number(number) is not None:
-                assumptions.append(f"{asset}年化波动率为{float(number):.2%}。")
-    if market.get("volatility_source") == "historical_volatility":
+            volatility = _safe_number(number)
+            if volatility is None:
+                continue
+            if volatility_source == "volatility_override":
+                assumptions.append(f"{asset}估值采用手动指定的年化波动率{volatility:.4%}。")
+            else:
+                assumptions.append(f"{asset}估值采用的年化波动率为{volatility:.4%}。")
+    if volatility_source == "historical_volatility":
         window, days = market.get("hv_window"), market.get("annualization_trading_days")
         if type(window) is int and type(days) is int:
             method = "对数收益率" if market.get("return_method") == "log_return" else "已确认收益率序列"
-            fields = market.get("hv_fields_by_asset", {})
-            price = "复权收盘价" if fields and all(v == "adj_close" for v in fields.values()) else "收盘价"
+            field_labels = {"close": "收盘价", "adj_close": "复权收盘价"}
+            fields = market.get("hv_fields_by_asset")
+            price = ""
+            if isinstance(fields, Mapping) and fields and all(
+                isinstance(field, str) and field in field_labels for field in fields.values()
+            ):
+                if len(set(fields.values())) == 1:
+                    price = field_labels[next(iter(fields.values()))]
+                else:
+                    price = "、".join(f"{asset}{field_labels[field]}" for asset, field in fields.items())
+            elif isinstance(market.get("hv_price_field"), str):
+                price = field_labels.get(market["hv_price_field"], "")
             assumptions.append(f"历史波动率采用{window}个交易日的{price}{method}，按每年{days}个交易日年化。")
+            first, last = market.get("hv_price_start_date"), market.get("hv_price_end_date")
+            if first and last:
+                assumptions.append(f"波动率样本为{first}至{last}的{window + 1}个收盘价。")
     tenor = _safe_number(market.get("time_to_maturity"))
     if tenor is not None:
         assumptions.append(f"剩余期限为{tenor:g}年。")
@@ -1013,7 +1064,11 @@ def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | No
     ):
         raise ReporterError("估值结果不满足当前百分比正式协议")
     value["method"] = _text(pricing.get("method"))
-    market_snapshot = pricing.get("market_snapshot") if isinstance(pricing.get("market_snapshot"), Mapping) else result.get("market_snapshot", {})
+    market_snapshot = pricing.get("market_snapshot")
+    if not isinstance(market_snapshot, Mapping):
+        market_snapshot = result.get("market_snapshot")
+    if not isinstance(market_snapshot, Mapping):
+        market_snapshot = {}
     value["valuation_date"] = _text(
         pricing.get("valuation_date")
         or market_snapshot.get("valuation_date")
@@ -1031,14 +1086,19 @@ def _pricing_content(module: Mapping[str, Any], contract: Mapping[str, Any] | No
     value["assumptions"] = _pricing_assumptions(pricing, market_snapshot)
     lifecycle = pricing.get("cashflow_lifecycle")
     if isinstance(lifecycle, Mapping) and lifecycle.get("valuation_relation") == "at_contract_start":
-        initial = _safe_number((lifecycle.get("initial_cashflow") or {}).get("pv_percent"))
+        initial_cashflow = lifecycle.get("initial_cashflow", {})
+        # Pricer records a zero contractual inception cashflow as explicit null.
+        if initial_cashflow is None:
+            initial = 0.0
+        else:
+            initial = _safe_number(initial_cashflow.get("pv_percent")) if isinstance(initial_cashflow, Mapping) else None
         remaining = _safe_number((lifecycle.get("remaining_value") or {}).get("pv_percent"))
         total = _safe_number((lifecycle.get("current_value") or {}).get("pv_percent"))
         if initial is None or remaining is None or total is None or abs(initial+remaining-total) > 1e-10 or abs(total-float(percent)) > 1e-10:
             raise ReporterError("估值现金流分解与合同净现值不一致")
         value["metrics"].extend([
             _metric("剩余合同价值", remaining, "与净现值相同数量及参考规模", value_format="percent"),
-            _metric("期初净支出", -initial, "与剩余合同价值相同数量及参考规模", value_format="percent"),
+            _metric("期初净支出", 0.0 - initial, "与剩余合同价值相同数量及参考规模", value_format="percent"),
         ])
         value["assumptions"].append("合同净现值等于剩余合同价值减期初净支出；两项均已按本合同数量缩放，不能将总价值与单倍期权费直接比较。")
     if _contract_product_id(contract) == "9.3":
@@ -1658,6 +1718,14 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         and uncovered_loss <= uncovered
     ) if counts_are_valid else False
     if counts_are_valid:
+        loss_rows = []
+        if loss_counts_are_valid and declared_loss:
+            loss_rows = [
+                {"label": "已观察损失分支", "value": observed_loss, "value_format": "number",
+                 "note": f"损失分支覆盖{observed_loss}/{declared_loss}"},
+                {"label": "未观察损失分支", "value": uncovered_loss, "value_format": "number",
+                 "note": "仅陈述历史样本覆盖，不代表未来损失概率"},
+            ]
         detail_tables.append({
             "title": "分支覆盖",
             "columns": [("label", "指标"), ("value", "数量")],
@@ -1674,17 +1742,7 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
                     "value_format": "number",
                     "note": "不代表未观察分支已实际发生，也不代表其经济结果已验证",
                 },
-                *([{
-                    "label": "已观察损失分支",
-                    "value": observed_loss,
-                    "value_format": "number",
-                    "note": f"损失分支覆盖{observed_loss}/{declared_loss}",
-                }, {
-                    "label": "未观察损失分支",
-                    "value": uncovered_loss,
-                    "value_format": "number",
-                    "note": "仅陈述历史样本覆盖，不代表未来损失概率",
-                }] if loss_counts_are_valid else []),
+                *loss_rows,
             ],
         })
         if isinstance(branch.get("limitations"), list) and branch["limitations"]:
@@ -1819,14 +1877,12 @@ def _backtest_content(module: Mapping[str, Any], contract: Mapping[str, Any] | N
         f"合同声明分支覆盖{observed}/{declared}"
         if counts_are_valid else "合同声明分支覆盖无法由本次冻结结果确认"
     )
-    loss_branch_note = (
-        f"损失分支覆盖{observed_loss}/{declared_loss}"
-        if loss_counts_are_valid else (
-            f"损失分支尚有{unclassified_loss}个未判定"
-            if unclassified_loss is not None and unclassified_loss > 0
-            else "损失分支覆盖无法由本次冻结结果确认"
-        )
-    )
+    if loss_counts_are_valid:
+        loss_branch_note = f"损失分支覆盖{observed_loss}/{declared_loss}" if declared_loss else "已完成判定，未发现损失分支"
+    elif counts_are_valid and unclassified_loss is not None and 0 < unclassified_loss <= declared:
+        loss_branch_note = f"损失分支尚有{unclassified_loss}个未判定"
+    else:
+        loss_branch_note = "损失分支覆盖无法由本次冻结结果确认"
     loss_sample_note = "已覆盖" if common["historical_loss_sample_covered"] else "未覆盖"
     value["summary_notes"] = [
         f"正收益样本{common['positive_return_count']}/{valid_sample_count}；有效收益样本共{valid_sample_count}个，"
@@ -1987,6 +2043,13 @@ def _contract_report_unit(request: ReportRequest, candidate_evidence: Mapping[st
         "pricing": _pricing_content(modules["pricing"], contract),
         "backtest": _backtest_content(modules["backtest"], contract),
     }
+    if isinstance(facts, Mapping):
+        crossing = _safe_number(facts.get("break_even_normalized"))
+        if crossing is not None and module_content["payoff"]["status"] == "ready":
+            module_content["payoff"]["expiry_break_even_ratio"] = crossing / 100
+        bound = facts.get("loss_bound") or {}
+        if _safe_number(bound.get("value")) is not None and module_content["payoff"]["status"] == "ready":
+            module_content["payoff"]["expiry_loss_bound"] = bound["value"]
     parameter_groups = _parameter_groups(contract)
     if not candidate.get("key_terms"):
         candidate["key_terms"] = [
