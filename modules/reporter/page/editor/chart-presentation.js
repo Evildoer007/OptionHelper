@@ -63,8 +63,12 @@
     return text(spec.value_format).toLowerCase() === 'percent' ? number / 100 : number;
   }
 
+  function usesLiteralCategories(axisName) {
+    return /年|日期|时间|代码|标识/.test(text(axisName));
+  }
+
   function displayCategory(value, axisName, digits = 2) {
-    return /年|日期|时间|代码|标识/.test(text(axisName)) ? text(value) : displayNumber(value, 'number', digits);
+    return usesLiteralCategories(axisName) ? text(value) : displayNumber(value, 'number', digits);
   }
 
   function axisPrecision(values, format = 'number') {
@@ -76,8 +80,64 @@
     return Math.min(6, Math.max(2, Math.ceil(-Math.log10(step))));
   }
 
+  function integerPriceLabels(values, name) {
+    const title = text(name);
+    if (!/价格|现价|股价|执行价|参考价|现货价|点位/.test(title)
+      || /%|％|比例|百分比|比值/.test(title) || usesLiteralCategories(title)) return false;
+    if (!values.every(value => Number.isFinite(value) && value >= 100)) return false;
+    const prices = [...new Set(values)].sort((a, b) => a - b);
+    return prices.length > 1 && prices.every((value, index) => index === 0 || value - prices[index - 1] >= 1);
+  }
+
+  function axisFormatter(values, name, minimumDigits = 2) {
+    const digits = integerPriceLabels(values, name) ? 0 : Math.max(minimumDigits, axisPrecision(values));
+    return value => displayCategory(value, name, digits);
+  }
+
   function presentationDefaults() {
     return {palette: [...DEFAULT_PALETTE], theme: copy(DEFAULT_THEME)};
+  }
+
+  function labelledAxis(values, name, style) {
+    const format = axisFormatter(values, name);
+    return {
+      ...style,
+      name: name || '',
+      nameLocation: 'middle',
+      nameTextStyle: {color: style.axisLabel?.color, fontSize: style.axisLabel?.fontSize, ...style.nameTextStyle},
+      axisLabel: {...style.axisLabel, hideOverlap: true, rotate: 0, formatter: format},
+      axisPointer: {label: {formatter: ({value}) => format(value)}},
+    };
+  }
+
+  function categoryAxis(values, name, style) {
+    const axis = labelledAxis(values, name, style);
+    axis.axisLabel.interval = 'auto';
+    return {...axis, type: 'category', data: values};
+  }
+
+  function cartesianXAxis(spec, style) {
+    const values = Array.isArray(spec.x) ? spec.x : [];
+    const name = spec.x_axis_name;
+    const continuous = (spec.type || 'line') === 'line' && !usesLiteralCategories(name) && values.length > 1
+      && values.every((value, index) => Number.isFinite(value) && (index === 0 || value > values[index - 1]))
+      && Number.isFinite(values.at(-1) - values[0]);
+    const axis = continuous ? {
+      ...labelledAxis(values, name, style),
+      type: 'value', scale: true, splitNumber: 5,
+      ...(integerPriceLabels(values, name) ? {minInterval: 1} : {}),
+      axisLine: {...style.axisLine, onZero: false},
+      splitLine: {show: false},
+    } : categoryAxis(values, name, style);
+    function seriesCoordinates(data) {
+      const observations = Array.isArray(data) ? data : [];
+      if (!continuous) return {data: observations};
+      return {
+        data: values.map((value, index) => [value, observations[index] ?? null]),
+        encode: {x: 0, y: 1, tooltip: [1]},
+      };
+    }
+    return {axis, seriesCoordinates};
   }
 
   function chartOption(spec, presentation = presentationDefaults()) {
@@ -98,27 +158,26 @@
     if (spec.type === 'surface') return window.OptionHelperSurface.figure(spec);
     if (spec.type === 'heatmap') {
       const yValues = Array.isArray(spec.y) ? spec.y : [];
+      const formatX = axisFormatter(xValues, spec.x_axis_name, 4);
+      const formatY = axisFormatter(yValues, spec.y_axis_name, 4);
       const data = Array.isArray(spec.data) ? spec.data : [];
       const values = data.map(item => Number(item?.[2])).filter(Number.isFinite);
+      const axisStyle = {
+        axisLine: {lineStyle: {color: theme.axis?.line}},
+        axisTick: {alignWithLabel: true},
+        axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize},
+      };
       return {
         animation: false,
         color: [...palette],
         tooltip: {
           ...tooltipStyle,
           position: 'top',
-          formatter: item => `${spec.x_axis_name || '横轴'}：${displayCategory(xValues[item.data[0]], spec.x_axis_name)}<br>${spec.y_axis_name || '纵轴'}：${displayCategory(yValues[item.data[1]], spec.y_axis_name)}<br>${spec.z_axis_name || '数值'}：${formatValue(item.data[2], spec)}`,
+          formatter: item => `${spec.x_axis_name || '横轴'}：${formatX(xValues[item.data[0]])}<br>${spec.y_axis_name || '纵轴'}：${formatY(yValues[item.data[1]])}<br>${spec.z_axis_name || '数值'}：${formatValue(item.data[2], spec)}`,
         },
         grid: {left: 72, right: 24, top: 30, bottom: 94},
-        xAxis: {
-          type: 'category', name: spec.x_axis_name || '', nameLocation: 'middle', nameGap: 27, data: xValues,
-          axisLine: {lineStyle: {color: theme.axis?.line}},
-          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.x_axis_name, axisPrecision(xValues))},
-        },
-        yAxis: {
-          type: 'category', name: spec.y_axis_name || '', nameLocation: 'middle', nameGap: 48, data: yValues,
-          axisLine: {lineStyle: {color: theme.axis?.line}},
-          axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => displayCategory(value, spec.y_axis_name, axisPrecision(yValues))},
-        },
+        xAxis: categoryAxis(xValues, spec.x_axis_name, {...axisStyle, nameGap: 30}),
+        yAxis: categoryAxis(yValues, spec.y_axis_name, {...axisStyle, nameGap: 48}),
         visualMap: {
           min: values.length ? Math.min(...values) : 0,
           max: values.length ? Math.max(...values) : 1,
@@ -134,26 +193,24 @@
     const yValues = series.flatMap(item => item.data || []).filter(value => value !== null && value !== '' && Number.isFinite(Number(value))).map(Number);
     const span = yValues.length ? (Math.max(...yValues) - Math.min(0, ...yValues)) / 4 : 1;
     const yDigits = axisPrecision([0, span], spec.value_format);
+    const horizontal = cartesianXAxis(spec, {
+      nameGap: 30,
+      axisLine: {lineStyle: {color: theme.axis?.line}},
+      axisTick: {alignWithLabel: true},
+      axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, margin: 10},
+    });
     return {
       animation: false,
       color: [...palette],
-      tooltip: {...tooltipStyle, trigger: 'axis', valueFormatter: value => formatValue(value, spec, Math.max(4, yDigits))},
+      tooltip: {...tooltipStyle, trigger: 'axis', confine: true, valueFormatter: value => formatValue(value, spec, Math.max(4, yDigits))},
       legend: {
         show: hasLegend, top: 2,
         textStyle: {color: theme.textStyle?.color, fontFamily: theme.textStyle?.fontFamily, fontSize: theme.textStyle?.fontSize},
       },
-      grid: {left: 58, right: 18, top: hasLegend ? 48 : 28, bottom: 78},
-      xAxis: {
-        type: 'category', name: spec.x_axis_name || '', nameLocation: 'middle', nameGap: 24, data: xValues,
-        axisLine: {lineStyle: {color: theme.axis?.line}},
-        axisLabel: {
-          color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, interval: 0,
-          rotate: xValues.length > 14 ? 42 : 0,
-          formatter: value => displayCategory(value, spec.x_axis_name, axisPrecision(xValues)),
-        },
-      },
+      grid: {left: 24, right: 18, top: hasLegend ? 48 : 33, bottom: 54, containLabel: true},
+      xAxis: horizontal.axis,
       yAxis: {
-        type: 'value', name: spec.y_axis_name || '', nameTextStyle: {color: theme.axis?.label},
+        type: 'value', name: spec.y_axis_name || '', nameTextStyle: {color: theme.axis?.label, align: 'left'},
         axisLabel: {color: theme.axis?.label, fontSize: theme.textStyle?.fontSize, formatter: value => formatValue(value, spec, yDigits)},
         splitLine: {lineStyle: {color: theme.axis?.split, type: 'dashed'}},
       },
@@ -165,7 +222,7 @@
         showSymbol: type === 'line' && xValues.length <= 60,
         symbolSize: 5,
         barMaxWidth: 42,
-        data: Array.isArray(item.data) ? item.data : [],
+        ...horizontal.seriesCoordinates(item.data),
         itemStyle: {color: palette[seriesIndex % palette.length]},
         lineStyle: {width: 2, type: lineTypes[seriesIndex % lineTypes.length]},
       })),
@@ -200,11 +257,15 @@
   }
 
   window.OptionHelperChartPresentation = Object.freeze({
+    axisFormatter,
+    cartesianXAxis,
+    categoryAxis,
     chartOption,
     displayCategory,
     displayNumber,
     formatValue,
     inputValue,
+    integerPriceLabels,
     mountCharts,
     parseInputValue,
     presentationDefaults,
