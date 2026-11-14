@@ -10,6 +10,19 @@ const terms = new Map([
   ['recommendation_delivery_run', '研究交付'], ['交付状态机', '报告交付流程'],
 ]);
 const superscripts = {'-':'⁻','0':'⁰','1':'¹','2':'²','3':'³','4':'⁴','5':'⁵','6':'⁶','7':'⁷','8':'⁸','9':'⁹'};
+
+export function withoutFactReferences(value, { streaming = false } = {}) {
+  let text = String(value ?? '');
+  if (streaming) {
+    // A citation may be split across messages, even just after the opening bracket.
+    const open = text.lastIndexOf('[');
+    if (open !== -1) {
+      const tail = text.slice(open + 1).replaceAll(/\s/g, '').toLowerCase();
+      if ('fact:fact_'.startsWith(tail) || /^fact:fact_[a-f0-9]*$/.test(tail)) text = text.slice(0, open);
+    }
+  }
+  return text.replace(/\[\s*fact\s*:\s*fact_[a-f0-9]{6,64}\s*\]|(?:fact\s*:\s*)?fact_[a-f0-9]{6,64}\b/gi, '');
+}
 function displayNumber(raw) {
   const value = Number(raw.replace('−', '-'));
   if (!Number.isFinite(value)) return raw;
@@ -33,7 +46,7 @@ function prose(value) {
 }
 export function presentAssistantReply(value) {
   // Keep executable examples, formulas, links and URLs byte-for-byte intact.
-  return String(value ?? '').split(/(```[\s\S]*?```|\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\[[^\]\n]*\]\([^\s)]*\)|https?:\/\/[^\s<>]+|`[^`\n]+`)/g).map(part => {
+  return withoutFactReferences(value).split(/(```[\s\S]*?```|\$\$[\s\S]*?\$\$|\$[^$\n]+\$|\\\([\s\S]*?\\\)|\\\[[\s\S]*?\\\]|\[[^\]\n]*\]\([^\s)]*\)|https?:\/\/[^\s<>]+|`[^`\n]+`)/g).map(part => {
     if (part.startsWith('`') && !part.startsWith('```')) {
       const raw = part.slice(1,-1);
       return terms.has(raw) ? terms.get(raw) : /^chat-report-[a-f0-9]{12,64}$/.test(raw) ? '历史报告' : part;
