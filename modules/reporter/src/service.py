@@ -382,6 +382,7 @@ def _generated_response(outcome: Mapping[str, Any], *, request: Mapping[str, Any
         "ok": True,
         "module": "reporter",
         "status": delivery_status,
+        "report_run_ref": {"task_id": task_id, "report_run_id": report_run_id},
         "output": {
             "report": report_name,
             "children": children,
@@ -560,7 +561,7 @@ class Handler(BaseHTTPRequestHandler):
                     output_root=self.output_root,
                 )
                 if not result.get("ok"):
-                    raise ReporterError(str(result.get("message") or "报告转换失败"))
+                    return self._json(HTTPStatus.BAD_REQUEST, result)
             else:
                 if self.result_store is None or self.designer_port is None:
                     raise ReporterError("Reporter服务缺少ResultStorePort或Designer ModulePort。")
