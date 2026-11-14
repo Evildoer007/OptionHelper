@@ -20,7 +20,7 @@ from urllib.parse import unquote_to_bytes
 from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
-from .renderer import display_text, chart_axis_precision, chart_category
+from .renderer import display_text, chart_axis_precision, chart_category, numeric_line_axis
 from .system_fonts import windows_font_candidates
 
 from bs4 import BeautifulSoup, NavigableString, Tag
@@ -583,9 +583,11 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                         fill=TOKENS.colors["paper"] if ratio > 0.55 else TOKENS.colors["ink"],
                         font=small_font,
                     )
+        x_digits = chart_axis_precision(x_values, axis_name=spec.get('x_axis_name'))
+        y_digits = chart_axis_precision(y_values, axis_name=spec.get('y_axis_name'))
         for index in sampled_indices(len(x_values)):
             value = x_values[index]
-            text = chart_category(value, spec.get('x_axis_name'), digits=chart_axis_precision(x_values))
+            text = chart_category(value, spec.get('x_axis_name'), digits=x_digits)
             box = draw.textbbox((0, 0), text, font=small_font)
             draw_text_within_canvas(
                 (left + (index + 0.5) * cell_width - (box[2] - box[0]) / 2, top + plot_height + 14),
@@ -595,7 +597,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
             )
         for index in sampled_indices(len(y_values)):
             value = y_values[index]
-            text = chart_category(value, spec.get('y_axis_name'), digits=chart_axis_precision(y_values))
+            text = chart_category(value, spec.get('y_axis_name'), digits=y_digits)
             box = draw.textbbox((0, 0), text, font=small_font)
             draw_text_within_canvas(
                 (left - (box[2] - box[0]) - 12, top + (rows - index - 0.5) * cell_height - (box[3] - box[1]) / 2),
@@ -626,6 +628,13 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                 font=small_font,
             )
         count = max(1, len(x_values))
+        horizontal = numeric_line_axis(x_values, spec.get("x_axis_name")) if chart_type == "line" else None
+        x_positions = horizontal[0] if horizontal else None
+
+        def x_at(index: int) -> float:
+            ratio = x_positions[index] if x_positions is not None else (index + 0.5) / count
+            return left + plot_width * ratio
+
         zero_y = top + plot_height - (0.0 - low) / (high - low) * plot_height
         for series_index, item in enumerate(series):
             color = _CHART_PALETTE[series_index % len(_CHART_PALETTE)]
@@ -635,7 +644,7 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                 value = _number(raw)
                 if value is None:
                     continue
-                x = left + (index + 0.5) * plot_width / count
+                x = x_at(index)
                 y = top + plot_height - (value - low) / (high - low) * plot_height
                 points.append((index, x, y, value))
             if chart_type == "bar":
@@ -677,11 +686,13 @@ def _render_chart_png(spec: Mapping[str, Any]) -> bytes:
                 fill=TOKENS.colors["ink_soft"],
                 font=small_font,
             )
-        for index in sampled_indices(len(x_values)):
-            value = x_values[index]
-            text = chart_category(value, spec.get('x_axis_name'), digits=chart_axis_precision(x_values))
+        ticks = [(value, left + plot_width * ratio) for value, ratio in horizontal[1]] if horizontal else [
+            (x_values[index], x_at(index)) for index in sampled_indices(len(x_values))
+        ]
+        x_digits = chart_axis_precision(x_values, axis_name=spec.get('x_axis_name'))
+        for value, x in ticks:
+            text = chart_category(value, spec.get('x_axis_name'), digits=x_digits)
             box = draw.textbbox((0, 0), text, font=small_font)
-            x = left + (index + 0.5) * plot_width / count
             draw_text_within_canvas(
                 (x - (box[2] - box[0]) / 2, top + plot_height + 14),
                 text,
