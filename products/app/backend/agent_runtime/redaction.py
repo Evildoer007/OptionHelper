@@ -18,6 +18,7 @@ _TOKEN = re.compile(
 _NAMED_SECRET = re.compile(r"(?i)\b(?:bearer|token|secret|api[_-]?key|access[_-]?token|refresh[_-]?token|password)\s*(?::|=|\s)\s*[A-Za-z0-9._~+\-/=]{12,}")
 _LOCAL_PATH = re.compile(r"(?<![A-Za-z0-9_])(?:~(?=/)|/(?:Users|private|tmp|var|etc|opt|Library))(?:/[^\s,;，；<>]*)?")
 _HIDDEN_REASONING = re.compile(r"(?is)<(?:think|analysis|reasoning)\b[^>]*>.*?</(?:think|analysis|reasoning)\s*>")
+_FACT_REFERENCE = re.compile(r"(?i)\[\s*fact\s*:\s*fact_[a-f0-9]{6,64}\s*\]|(?:fact\s*:\s*)?fact_[a-f0-9]{6,64}\b")
 INTERNAL_REFERENCE_PATTERN = re.compile(
     r"(?i)(?:reporter\.run|runref|source_id|module_run_ref|report_run_ref|data_asset_ref|"
     r"contract_ref|contract_fingerprint|registry_snapshot_hash|candidate_id|task_id|"
@@ -46,4 +47,9 @@ def has_hidden_reasoning(value: object) -> bool:
     return bool(_HIDDEN_REASONING.search(str(value or "")))
 
 
-__all__ = ("has_hidden_reasoning", "redact_text", "INTERNAL_REFERENCE_PATTERN")
+def public_conversation_text(value: object, identity: SessionIdentity | None = None, *, limit: int | None = None) -> str:
+    """Remove model-only fact bindings when projecting a complete public string."""
+    return redact_text(_FACT_REFERENCE.sub("", str(value or "")), identity, limit=limit)
+
+
+__all__ = ("has_hidden_reasoning", "public_conversation_text", "redact_text", "INTERNAL_REFERENCE_PATTERN")
