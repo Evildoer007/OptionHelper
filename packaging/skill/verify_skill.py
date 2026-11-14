@@ -363,6 +363,7 @@ def _capability_interface_errors(root: Path) -> list[str]:
     """检查当前跨模块Capability接口确实随包进入发行物。"""
     required = {
         "assets/designer/vendor/echarts.min.js": "Reporter portable ECharts资源",
+        "assets/designer/runtime/chart-presentation.js": "Reporter与报告编辑器共用的图表展示协议",
         "assets/designer/runtime/vendor/plotly-optionhelper.min.js": "Reporter离线Plotly资源",
         "assets/designer/runtime/plotly-chart-system.js": "Reporter与OptDesk共用的Plotly展示协议",
         "assets/designer/vendor/surface-chart.js": "Reporter曲面展示协议",
