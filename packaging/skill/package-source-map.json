@@ -37,6 +37,7 @@
     {"source": "core/tool_entry.py", "target": "scripts/tool_entry.py"},
     {"source": "core/requirements.lock", "target": "scripts/requirements.lock"},
     {"source": "packaging/skill/environment_check.py", "target": "scripts/environment_check.py"},
+    {"source": "modules/reporter/page/editor/chart-presentation.js", "target": "assets/designer/runtime/chart-presentation.js"},
     {"source": "core/src/runtime/browser/plotly_chart_system.js", "target": "assets/designer/runtime/plotly-chart-system.js"},
     {"source": "core/src/runtime/browser/vendor/plotly-optionhelper.min.js", "target": "assets/designer/runtime/vendor/plotly-optionhelper.min.js"}
   ],
