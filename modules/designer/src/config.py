@@ -197,6 +197,17 @@ class DesignerConfig:
         return os.path.relpath(self.echarts_asset_path, destination_dir.resolve())
 
     @property
+    def chart_presentation_path(self) -> Path:
+        """Resolve the chart options shared with the App report editor."""
+
+        project = Path(__file__).resolve().parents[3]
+        source = project / "modules" / "reporter" / "page" / "editor" / "chart-presentation.js"
+        path = source if source.is_file() else self.asset_root / "runtime" / "chart-presentation.js"
+        if not path.is_file() or path.is_symlink():
+            raise DesignerConfigurationError("找不到报告图表展示资源：chart-presentation.js")
+        return path
+
+    @property
     def surface_runtime_paths(self) -> tuple[Path, ...]:
         """Resolve the same locked Plotly sources in development and delivery."""
 
