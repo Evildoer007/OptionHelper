@@ -47,7 +47,7 @@ _FORBIDDEN_PUBLIC_ECONOMICS = re.compile(
 )
 _PUBLIC_MODULE_NAMES = {"payoff": "收益结构", "pricing": "估值定价", "backtest": "历史回测"}
 _DISPLAY_MODULE_FIELDS = {
-    "payoff": ("formula", "formula_mathml", "scenarios"),
+    "payoff": ("formula", "formula_mathml", "scenarios", "expiry_break_even_ratio", "expiry_loss_bound"),
     "pricing": (
         "method", "valuation_date", "precision_status", "quote_eligible", "metrics", "greeks",
         "assumptions", "scenario_rows", "charts", "limitations", "kind", "target_id",
@@ -111,6 +111,8 @@ _QUOTE_TERM_PRIORITY = {
     "执行价2": 22,
     "执行价3": 23,
     "期权费": 30,
+    "理论价值（剩余合同）": 31,
+    "合同净现值": 32,
     "敲入水平": 40,
     "敲出水平": 41,
     "障碍水平": 42,
@@ -132,8 +134,11 @@ def _public_text(value: Any, fallback: str = "") -> str:
     text = str(value or "").strip()
     if _INTERNAL_DELIVERY_TEXT.search(text) or _FORBIDDEN_PUBLIC_ECONOMICS.search(text):
         return fallback
-    text = re.sub(r"(?i)optionhelper", "", text).strip(" -_/|：:")
-    return text or fallback
+    text = re.sub(r"(?i)optionhelper", "", text).strip(" _/|：:")
+    # A leading hyphen before a number is its sign, including in table cells.
+    if not re.match(r"^-(?:\d|\.\d)", text):
+        text = text.lstrip(" -_/|：:")
+    return text.rstrip(" -_/|：:") or fallback
 
 
 def _public_supplemental_sections(value: Any) -> list[dict[str, Any]]:
@@ -250,6 +255,8 @@ def _public_module_value(value: Any, *, field: str = "") -> Any:
 
 def _display_module(name: str, raw: Mapping[str, Any], *, artifact_paths: Mapping[str, str]) -> dict[str, Any]:
     source = raw if isinstance(raw, Mapping) else {}
+    if source.get("status") == "not_requested":
+        return {"status": "not_run"}
     value = {
         "status": str(source.get("status", "not_run")),
         **{
