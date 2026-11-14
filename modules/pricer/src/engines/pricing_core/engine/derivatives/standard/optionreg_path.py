@@ -267,7 +267,7 @@ class _PathPricingSession:
             if self.cached_draws is not None
             else self._draw_batches(batch_size=per_market_batch)
         )
-        from runtime.contracts.contract_api import evaluate_contract_batch
+        from runtime.contracts.contract_api import discount_terminal_cashflows, evaluate_contract_batch
         for draws in batches:
             count = len(draws)
             path_blocks = []
@@ -282,9 +282,21 @@ class _PathPricingSession:
                 paths[:, 0, :] = spots
                 paths[:, 1:, :] = spots * np.exp(np.cumsum(drift + diffusion_scale * draws, axis=1))
                 path_blocks.append(paths)
-            combined_paths = np.concatenate(path_blocks, axis=0)
-            if not np.isfinite(combined_paths).all() or np.any(combined_paths <= 0.0):
+            if any(not np.isfinite(paths).all() or np.any(paths <= 0.0) for paths in path_blocks):
                 raise ValueError("模拟价格路径必须为有限正数")
+            if self.history is None:
+                terminal_values = tuple(
+                    discount_terminal_cashflows(
+                        self.prepared_evaluator, paths, rate=market.risk_free_rate, elapsed_years=self.elapsed,
+                    )
+                    for paths, market in zip(path_blocks, markets)
+                )
+                if all(values is not None for values in terminal_values):
+                    for target, values in zip(discounted, terminal_values):
+                        target[start:start + count] = values
+                    start += count
+                    continue
+            combined_paths = np.concatenate(path_blocks, axis=0)
             price_fields = None
             if self.history is not None:
                 future_paths = combined_paths[:, 1:, :]
