@@ -176,6 +176,7 @@ def _required_candidate(raw: Mapping[str, Any]) -> dict[str, Any]:
             "currency": currency,
             "price_convention": price_convention,
             "rank": rank,
+            **({"is_primary": value["is_primary"]} if isinstance(value.get("is_primary"), bool) else {}),
             "reason": reason,
             "suitable_for": list(value.get("suitable_for", [])),
             "not_suitable_for": list(value.get("not_suitable_for", [])),
@@ -915,6 +916,17 @@ def _quote_fact(result: Mapping[str, Any], contract: Mapping[str, Any]) -> dict[
             "unit": unit,
             **({"note": require_text(term.get("note"), f"reporter_quote_fact.terms[{index}].note")} if term.get("note") else {}),
         })
+    # Pricing is the verified module result that owns this quote. Read its
+    # valuations directly, including for older quote facts with only terms.
+    lifecycle = pricing.get("cashflow_lifecycle")
+    remaining = lifecycle.get("remaining_value") if isinstance(lifecycle, Mapping) else None
+    for symbol, label, value in (
+        ("theoretical_value", "理论价值（剩余合同）", remaining.get("pv_percent") if isinstance(remaining, Mapping) else None),
+        ("contract_npv", "合同净现值", pricing.get("pv_percent")),
+    ):
+        if type(value) in (int, float) and math.isfinite(value):
+            number = f"{100 * value:.4f}".rstrip("0").rstrip(".")
+            terms.append({"symbol": symbol, "label": label, "value": f"{number}%", "unit": "percent"})
     return {
         "schema": _QUOTE_FACT_SCHEMA,
         "source": source_fact,
