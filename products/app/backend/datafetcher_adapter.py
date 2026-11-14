@@ -60,8 +60,8 @@ _FAILURE_PROJECTIONS = {
         "请等待额度恢复或切换具备可用额度的正式数据连接后重试。",
     ),
     "account_permission_denied": (
-        "当前iFind账号已失效或不可用于数据接口。",
-        "请在设置中心保存有效凭据并完成连接测试后重试。",
+        "iFind拒绝了当前账号的接口访问权限。",
+        "请向数据服务商确认账号授权和所请求的接口权限后重试。",
     ),
     "device_limit_exceeded": (
         "iFind设备或IP授权数量已达上限。",
