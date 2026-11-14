@@ -53,8 +53,9 @@ export function createResearchControls({ container, request, enhanceSelects, can
   const thumb = document.createElement('span'); thumb.className = 'research-depth-slider__thumb';
   const stops = document.createElement('span'); stops.className = 'research-depth-slider__stops';
   depths.forEach(() => stops.append(document.createElement('i')));
-  rail.append(fill, stops, thumb); track.append(rail, range);
+  rail.append(fill, stops); track.append(rail, thumb, range);
   rail.setAttribute('aria-hidden', 'true');
+  thumb.setAttribute('aria-hidden', 'true');
   const ticks = document.createElement('div'); ticks.className = 'research-depth-slider__labels';
   labels.forEach((label, index) => {
     const button = document.createElement('button'); button.type = 'button'; button.textContent = label;
@@ -125,8 +126,9 @@ export function createResearchControls({ container, request, enhanceSelects, can
   let pointer = null;
   function pointerPosition(event) {
     const rect = range.getBoundingClientRect();
-    const travel = Math.max(1, rect.width - 28);
-    return Math.max(0, Math.min(2, (event.clientX - rect.left - 14) / travel * 2));
+    const thumbSize = thumb.offsetHeight;
+    const travel = Math.max(1, rect.width - thumbSize);
+    return Math.max(0, Math.min(2, (event.clientX - rect.left - thumbSize / 2) / travel * 2));
   }
   range.addEventListener('pointerdown', event => {
     if (range.disabled || event.button !== 0) return;
