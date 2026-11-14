@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from http.client import IncompleteRead
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -31,6 +32,10 @@ MAX_TOOL_CALL_CHARS = 128 * 1024
 
 class OpenAICompatibleStreamError(ValidationError):
     """Raised when an SSE response cannot be treated as a complete stream."""
+
+
+class ModelStreamInterrupted(OpenAICompatibleStreamError):
+    """The connection ended before the model finished its response."""
 
 
 def _interrupt_response(response: Any) -> None:
@@ -165,7 +170,7 @@ def stream_openai_compatible(
                 if request_control is not None:
                     request_control.raise_if_cancelled()
                 if not saw_done and not saw_finish_reason:
-                    raise OpenAICompatibleStreamError("模型流式响应未正常结束")
+                    raise ModelStreamInterrupted("模型回复中途断开，请重试。")
                 yield {"type": "finish", "finish_reason": finish_reason}
             finally:
                 remove_cancel_listener()
@@ -175,6 +180,10 @@ def stream_openai_compatible(
         raise
     except HTTPError as error:
         raise model_http_error(error.code) from error
+    except (IncompleteRead, ConnectionResetError) as error:
+        if request_control is not None:
+            request_control.raise_if_cancelled()
+        raise ModelStreamInterrupted("模型回复中途断开，请重试。") from error
     except (URLError, TimeoutError, OSError) as error:
         if request_control is not None and request_control.cancelled:
             request_control.raise_if_cancelled()
@@ -399,6 +408,7 @@ __all__ = [
     "MAX_SSE_EVENT_BYTES",
     "MAX_SSE_LINE_BYTES",
     "MAX_STREAM_RESPONSE_BYTES",
+    "ModelStreamInterrupted",
     "OpenAICompatibleStreamError",
     "stream_openai_compatible",
 ]
