@@ -6,6 +6,30 @@
  * Standalone module pages never receive the attribute and keep their own
  * chrome and layout.
  */
+:root {
+  --action-focus-tint: color-mix(in srgb, var(--color-ink, #252525) 16%, transparent);
+}
+
+/* Desk and the report editor share the workbench's tonal action focus. */
+@layer action-focus {
+  :where(button, a[href], summary, input:is([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"]),
+    [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"], [role="treeitem"]):focus-visible {
+    outline: none !important;
+    box-shadow: inset 0 0 0 100vmax var(--action-focus-tint) !important;
+  }
+
+  @media (forced-colors: active) {
+    :where(button, a[href], summary, input:is([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"]),
+      [role="button"], [role="tab"], [role="menuitem"], [role="option"], [role="switch"], [role="treeitem"]):focus-visible,
+    :where(input:not([type="range"], [type="file"], [type="color"]), select, textarea):focus {
+      forced-color-adjust: none;
+      background: Highlight !important;
+      color: HighlightText !important;
+      box-shadow: none !important;
+    }
+  }
+}
+
 /* OptDesk owns the surrounding chrome. Standalone module pages keep their own header. */
 html[data-optionhelper-app-hosted="true"],
 html[data-optionhelper-app-hosted="true"] body,
@@ -1628,7 +1652,6 @@ html body input:is([type="checkbox"], [type="radio"]):checked::after { opacity: 
 html body input[type="checkbox"]:indeterminate::after { opacity: 1; width: 8px !important; height: 2px !important; mask: none; -webkit-mask: none; }
 html body input[type="radio"]::after { width: 6px !important; height: 6px !important; border-radius: 50% !important; mask: none; -webkit-mask: none; }
 html body input:is([type="checkbox"], [type="radio"]):hover:not(:disabled) { border-color: var(--color-brand-red, #c8102e) !important; }
-html body input:is([type="checkbox"], [type="radio"]):focus-visible { outline: 2px solid color-mix(in srgb, var(--color-brand-red, #c8102e) 55%, transparent) !important; outline-offset: 3px !important; }
 html body input:is([type="checkbox"], [type="radio"]):disabled { opacity: .45 !important; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   html body input:is([type="checkbox"], [type="radio"]), html body input:is([type="checkbox"], [type="radio"])::after { transition: none !important; }
@@ -1646,13 +1669,14 @@ html body :is(.choice-option, .oh-choice__option)[aria-selected="true"]::after {
 /* Running is independent of dirty/edit: only active operations emit ripples. */
 html .state-dot:is([data-state="running"], [data-state="cancelling"]) {
   position: relative;
+  flex-shrink: 0;
   background: var(--color-brand-red, #c8102e) !important;
   color: var(--color-brand-red, #c8102e);
   box-shadow: none !important;
 }
 .state-dot:is([data-state="running"], [data-state="cancelling"])::after {
   content: ""; position: absolute; inset: 0; border: 1px solid currentColor;
-  border-radius: 50%; box-sizing: border-box;
+  border-radius: 50%; box-sizing: border-box; transform-origin: center;
   animation: oh-running-ripple 1600ms cubic-bezier(.16, 1, .3, 1) infinite;
 }
 @keyframes oh-running-ripple {
