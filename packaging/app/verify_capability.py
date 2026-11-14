@@ -105,6 +105,7 @@ def verify_app_capability(root: Path) -> list[str]:
         "assets/icons/optionhelper-app-icon-tile-light.ico",
         "assets/icons/optionhelper-app-icon-tile-dark.ico",
         "assets/designer/vendor/echarts.min.js",
+        "assets/designer/runtime/chart-presentation.js",
         "assets/designer/vendor/surface-chart.js",
         "assets/designer/runtime/plotly-chart-system.js",
         "assets/designer/runtime/vendor/plotly-optionhelper.min.js",
