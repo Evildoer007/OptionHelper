@@ -31,7 +31,7 @@ from ..agent_runtime.session_context import (
     transcript_messages,
 )
 from ..agent_runtime.projection_cache import ProjectionCache
-from ..agent_runtime.redaction import redact_text
+from ..agent_runtime.redaction import public_conversation_text, redact_text
 
 
 PENDING_RECOMMENDATION_SCHEMA_ID = "optionhelper.pending-recommendation"
@@ -108,14 +108,27 @@ class TaskService:
         self._state.update("tasks", update)
         return self._public_task(task)
 
-    def list(self, identity: SessionIdentity) -> list[dict[str, Any]]:
-        tasks = self._state.read("tasks").values()
-        result = [
-            self._migrate_legacy_messages(identity, str(task.get("task_id")))
-            for task in tasks
+    def list(self, identity: SessionIdentity, *, summary: bool = False) -> list[dict[str, Any]]:
+        tasks = [
+            task
+            for task in self._state.read("tasks").values()
             if isinstance(task, dict) and task.get("tenant_id") == identity.tenant_id and task.get("created_by") == identity.principal_id
         ]
-        return [self._public_task(task) for task in sorted(result, key=lambda task: (task.get("pinned") is True, str(task.get("updated_at", ""))), reverse=True)]
+        if not summary:
+            tasks = [self._migrate_legacy_messages(identity, str(task.get("task_id"))) for task in tasks]
+        tasks.sort(key=lambda task: (task.get("pinned") is True, str(task.get("updated_at", ""))), reverse=True)
+        if summary:
+            return [
+                {
+                    "task_id": task["task_id"],
+                    "subject": task.get("subject", ""),
+                    "pinned": task.get("pinned") is True,
+                    "created_at": task.get("created_at", ""),
+                    "updated_at": task.get("updated_at", ""),
+                }
+                for task in tasks
+            ]
+        return [self._public_task(task) for task in tasks]
 
     def owned_task_ids(self, identity: SessionIdentity) -> list[str]:
         """Read owned task IDs for runtime status without projecting conversations."""
@@ -130,6 +143,9 @@ class TaskService:
 
     def get(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
         return self._public_task(self._get_raw(identity, task_id))
+
+    def require_owned(self, identity: SessionIdentity, task_id: str) -> None:
+        _owned_task(self._state.read("tasks"), identity, task_id, "task.read")
 
     def rename(self, identity: SessionIdentity, task_id: str, subject: str) -> dict[str, Any]:
         """Rename one owned App task without changing its module results."""
@@ -227,21 +243,12 @@ class TaskService:
         return self._public_task(removed)
 
     def _get_raw(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
-        task = self._state.read("tasks").get(task_id)
-        if not isinstance(task, dict):
-            raise KeyError(task_id)
-        if task.get("tenant_id") != identity.tenant_id or task.get("created_by") != identity.principal_id:
-            raise AuthorizationError("task.read", "task is not owned by current caller")
         return self._migrate_legacy_messages(identity, task_id)
 
     def _migrate_legacy_messages(self, identity: SessionIdentity, task_id: str) -> dict[str, Any]:
         """Idempotently move legacy embedded messages into the session log."""
 
-        current = self._state.read("tasks").get(task_id)
-        if not isinstance(current, dict):
-            raise KeyError(task_id)
-        if current.get("tenant_id") != identity.tenant_id or current.get("created_by") != identity.principal_id:
-            raise AuthorizationError("task.read", "task is not owned by current caller")
+        current = _owned_task(self._state.read("tasks"), identity, task_id, "task.read")
         raw_session_id = str(current.get("conversation_session_id", "")).strip()
         session_id = SessionId(raw_session_id or f"conversation-{uuid4().hex}")
         self._event_log.ensure_session(session_id, kind="conversation")
@@ -302,10 +309,15 @@ class TaskService:
         if isinstance(deletion, dict) and deletion.get("status") == "delete_started":
             public["deletion_status"] = "delete_started"
         session_id = str(value.get("conversation_session_id", "")).strip()
-        public["messages"] = (
-            transcript_messages(self._event_log.replay(SessionId(session_id)))
-            if session_id else []
-        )
+        messages = transcript_messages(self._event_log.replay(SessionId(session_id))) if session_id else []
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            message["content"] = public_conversation_text(message.get("content"))
+            for block in message.get("content_blocks", []):
+                if block.get("type") in {"text", "reasoning"}:
+                    block["text"] = public_conversation_text(block.get("text"))
+        public["messages"] = messages
         return public
 
     def append_message(
@@ -688,7 +700,7 @@ class TaskService:
         if set(reference) != required or reference["tenant_id"] != identity.tenant_id or reference["task_id"] != task_id:
             raise ValidationError("ModuleRunRef is invalid for this task")
 
-        record=self._state.read("results").get(f"{reference['module']}:{reference['run_id']}",{})
+        record = self._state.read_record("results", f"{reference['module']}:{reference['run_id']}") or {}
         reference_field="research_run_refs" if record.get("research") and not record.get("research_selected") else "run_refs"
 
         def update(value: dict[str, Any]) -> dict[str, Any]:
@@ -1538,6 +1550,10 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
     runtime_scope = str(payload.get("runtime_scope", "")).strip().lower()
     if runtime_scope not in {"main_agent", "recommender"}:
         runtime_scope = ""
+    if payload.get("checking_final_numbers") is True and event_type.startswith("assistant."):
+        # Preserve the cursor without publishing an internal draft or losing usage events.
+        return {"type": "answer", "status": "running", "summary": "正在核对结果。",
+                "created_at": timestamp, "scope": "main_agent", "payload": {}}
     if event_type in {"assistant.text_delta", "assistant.reasoning_delta"}:
         delta = payload.get("delta", payload.get("text", ""))
         if isinstance(delta, str):
@@ -1573,7 +1589,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
                 return None
             block_type = str(block.get("type", "")).replace("_", "-")
             if block_type in {"text", "reasoning"}:
-                safe_payload["block"] = {"type": block_type, "text": str(block.get("text", ""))[:64_000]}
+                safe_payload["block"] = {"type": block_type, "text": public_conversation_text(block.get("text"), limit=64_000)}
             elif block_type == "tool-call":
                 safe_payload["block"] = {"type": "tool-call", "name": str(block.get("name", ""))[:80]}
             else:
@@ -1581,7 +1597,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
     elif event_type == "assistant.message":
         text = payload.get("text")
         if isinstance(text, str):
-            safe_payload["text"] = text[:64_000]
+            safe_payload["text"] = public_conversation_text(text, limit=64_000)
         blocks = payload.get("blocks")
         if isinstance(blocks, list):
             safe_blocks: list[dict[str, str]] = []
@@ -1590,7 +1606,7 @@ def _browser_runtime_event(value: Mapping[str, Any]) -> dict[str, Any] | None:
                     continue
                 block_type = str(block.get("type", "")).replace("_", "-")
                 if block_type in {"text", "reasoning"}:
-                    safe_blocks.append({"type": block_type, "text": str(block.get("text", ""))[:64_000]})
+                    safe_blocks.append({"type": block_type, "text": public_conversation_text(block.get("text"), limit=64_000)})
                 elif block_type == "tool-call":
                     safe_blocks.append({"type": "tool-call", "name": str(block.get("name", ""))[:80]})
             safe_payload["blocks"] = safe_blocks
@@ -1749,10 +1765,16 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     constraints = value.get("confirmed_constraints")
     if not isinstance(constraints, dict) or set(constraints).difference({
         "underlying", "horizon", "market_view", "max_loss", "principal_fluctuation",
-        "output_type", "format", "path_count", "backtest_range", "backtest_config", "valuation_date",
-        "risk_free_rate", "dividend_yield", "hv_window", "model_method", *_RECOMMENDATION_PERMISSION_FIELDS, "premium_budget_ratio", "reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount",
+        "output_type", "format", "path_count", "backtest_range", "backtest_config", "valuation_date", "comparison_product_ids",
+        "risk_free_rate", "dividend_yield", "hv_window", "model_method", "market_data_asset_id", *_RECOMMENDATION_PERMISSION_FIELDS, "premium_budget_ratio", "reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount",
     }):
         raise ValidationError("Recommendation continuation constraints are invalid")
+    if "comparison_product_ids" in constraints:
+        products = constraints["comparison_product_ids"]
+        if not isinstance(products, list) or not 2 <= len(products) <= 10 or any(
+            not isinstance(product, str) or not re.fullmatch(r"\d{1,2}\.\d{1,2}", product) for product in products
+        ) or len(set(products)) != len(products):
+            raise ValidationError("Recommendation comparison_product_ids are invalid")
     for key in ("reference_notional", "holding_notional", "premium_budget_amount", "max_loss_amount"):
         if key in constraints and (type(constraints[key]) not in (int, float)
                                    or not math.isfinite(constraints[key]) or constraints[key] <= 0):
@@ -1770,6 +1792,9 @@ def _pending_recommendation(value: dict[str, Any], *, allow_approved: bool = Fal
     if "hv_window" in constraints and (type(constraints["hv_window"]) is not int
                                        or not 2 <= constraints["hv_window"] <= 2520):
         raise ValidationError("Recommendation hv_window is invalid")
+    if "market_data_asset_id" in constraints and (not isinstance(constraints["market_data_asset_id"], str)
+        or not re.fullmatch(r"data-[a-zA-Z0-9_-]{1,180}", constraints["market_data_asset_id"])):
+        raise ValidationError("Recommendation market_data_asset_id is invalid")
     if "model_method" in constraints and (not isinstance(constraints["model_method"], str)
                                            or constraints["model_method"] not in {"analytical", "monte_carlo"}):
         raise ValidationError("Recommendation model_method is invalid")
