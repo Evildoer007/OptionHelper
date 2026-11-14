@@ -12,7 +12,7 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import lru_cache
-from math import ceil, floor, inf
+from math import ceil, exp, floor, inf
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -1089,6 +1089,14 @@ class ContractEvaluationCancelled(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _TerminalSettlement:
+    reference: float
+    normalized_base: float
+    variables: Mapping[str, Any]
+    cases: tuple[tuple[ast.Compare, tuple[tuple[float, ast.AST], ...]], ...]
+
+
+@dataclass(frozen=True)
 class PreparedContractEvaluator:
     """绑定合同与价格网格的只读解释器准备结果。"""
 
@@ -1099,6 +1107,7 @@ class PreparedContractEvaluator:
     dates: tuple[pd.Timestamp, ...] | None
     _base_variables: Mapping[str, Any] = field(repr=False, compare=False)
     _schedule_cache: Mapping[int, tuple[np.ndarray, np.ndarray]] = field(repr=False, compare=False)
+    _terminal_settlement: _TerminalSettlement | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
@@ -1859,6 +1868,7 @@ def prepare_contract_evaluator(
         dates=normalized_dates,
         _base_variables=MappingProxyType(base_variables),
         _schedule_cache=MappingProxyType(schedule_cache),
+        _terminal_settlement=_prepare_terminal_settlement(contract, grid_times, base_variables),
     )
 
 
@@ -1986,6 +1996,113 @@ def evaluate_contract_batch(
             )
             evaluations.append(_evaluate_contract_variables(prepared.contract, path, variables, _batch_preparation=batch_preparation))
     return BatchPayoffEvaluation(tuple(evaluations))
+
+
+def _terminal_numeric_formula(node: ast.AST, variables: Mapping[str, Any]) -> bool:
+    if isinstance(node, ast.Constant):
+        return type(node.value) in (int, float)
+    if isinstance(node, ast.Name):
+        return node.id == "S_T" or type(variables.get(node.id)) in (int, float)
+    if isinstance(node, ast.UnaryOp):
+        return isinstance(node.op, (ast.UAdd, ast.USub)) and _terminal_numeric_formula(node.operand, variables)
+    if isinstance(node, ast.BinOp):
+        return (
+            isinstance(node.op, (ast.Add, ast.Sub, ast.Mult))
+            and _terminal_numeric_formula(node.left, variables)
+            and _terminal_numeric_formula(node.right, variables)
+        )
+    return False
+
+
+def _terminal_cash_terms(node: ast.AST, variables: Mapping[str, Any]) -> tuple[tuple[float, ast.AST], ...]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return (*_terminal_cash_terms(node.left, variables), *_terminal_cash_terms(node.right, variables))
+    if (
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "cash"
+        and len(node.args) == 2 and not node.keywords and _terminal_numeric_formula(node.args[1], variables)
+    ):
+        time = _nonnegative_number(_FormulaEvaluator(variables).visit(node.args[0]), "cash时间")
+        return ((time, node.args[1]),)
+    raise FormulaError("现金流需要逐路径解释")
+
+
+def _prepare_terminal_settlement(
+    contract: ResolvedContract, times: tuple[float, ...], base_variables: Mapping[str, Any],
+) -> _TerminalSettlement | None:
+    """Prepare vector evaluation only for proven close-to-close terminal formulas."""
+    terms = contract.terms
+    if (
+        len(contract.underlyings) != 1 or len(contract.paths) != 1
+        or contract.paths[0]["condition"] != "True"
+        or terms.get("monitor") or contract.resolved_schedules or counted_observation_key(terms) is not None
+        or terms.get("observation_price", "close") != "close"
+        or contract.identity.get("price_convention") != "normalized_100"
+        or "S0" not in terms or "S0Vec" in terms or "T" not in terms
+    ):
+        return None
+    cases = contract.paths[0]["cases"]
+    if len(contract.active_path_case_refs) != len(cases):
+        return None
+    maturity = _frozen_civil_maturity_time(contract.identity)
+    if abs(times[-1] - (float(terms["T"]) if maturity is None else maturity)) > _MATURITY_TIME_TOLERANCE:
+        return None
+    reference = (contract.identity.get("reference_prices") or {}).get(contract.underlyings[0])
+    if reference is None:
+        return None
+    variables = {**base_variables, "T": times[-1] if maturity is None else maturity, "u": 1.0}
+    compiled = []
+    try:
+        for case in cases:
+            domain = _validated_formula_tree(case["domain"]).body
+            if not isinstance(domain, ast.Compare) or not all(
+                _terminal_numeric_formula(node, variables) for node in (domain.left, *domain.comparators)
+            ):
+                return None
+            cash = _terminal_cash_terms(_validated_formula_tree(case["pnl"]).body, variables)
+            compiled.append((domain, cash))
+    except (FormulaError, ArithmeticError, ValueError, TypeError):
+        return None
+    return _TerminalSettlement(float(reference), float(terms["S0"]), MappingProxyType(variables), tuple(compiled))
+
+
+def discount_terminal_cashflows(
+    prepared: PreparedContractEvaluator, paths: np.ndarray, *, rate: float, elapsed_years: float,
+) -> np.ndarray | None:
+    """Batch the same resolved settlement formulas over terminal prices, when possible.
+
+    The caller supplies prevalidated paths. Unsupported or ambiguous formulas use
+    the full path evaluator, which owns the original validation and error messages.
+    """
+    plan = prepared._terminal_settlement
+    if plan is None:
+        return None
+    terminal = paths[:, -1, 0] / plan.reference * plan.normalized_base
+    if not np.isfinite(terminal).all():
+        return None
+    evaluator = _FormulaEvaluator({**plan.variables, "S_T": terminal})
+    matches = np.zeros(len(paths), dtype=np.int32)
+    values = np.zeros(len(paths), dtype=float)
+    try:
+        for domain, cash in plan.cases:
+            left = evaluator.visit(domain.left)
+            mask = np.ones(len(paths), dtype=bool)
+            for operator, node in zip(domain.ops, domain.comparators):
+                right = evaluator.visit(node)
+                mask &= _compare(left, right, operator)
+                left = right
+            if not mask.any():
+                continue
+            matches += mask
+            amounts = _FormulaEvaluator({**plan.variables, "S_T": terminal[mask]})
+            present_value = np.zeros(int(mask.sum()), dtype=float)
+            for pay_time, amount in cash:
+                present_value += amounts.visit(amount) * exp(-rate * max(0.0, pay_time - elapsed_years))
+            values[mask] = present_value
+    except (FormulaError, ArithmeticError, ValueError, TypeError):
+        return None
+    if np.any(matches != 1) or not np.isfinite(values).all():
+        return None
+    return values
 
 
 def evaluate_contract(contract: ResolvedContract, price_path: PricePath) -> PayoffEvaluation:
