@@ -145,10 +145,26 @@
     return { min: minimum - padding, max: maximum + padding, values };
   }
 
+  function surfaceAxisTicks(values, limit) {
+    if (values.length <= limit) return values;
+    const minimum = Math.min(...values), maximum = Math.max(...values);
+    const target = (maximum - minimum) / (limit - 1);
+    const power = 10 ** Math.floor(Math.log10(target));
+    for (const factor of [1, 2, 2.5, 5, 10]) {
+      const step = factor * power;
+      const first = Math.ceil(minimum / step), last = Math.floor(maximum / step);
+      const count = last - first + 1;
+      if (Number.isSafeInteger(first) && count >= 2 && count <= limit) {
+        return Array.from({length: count}, (_, index) => Number(((first + index) * step).toPrecision(14)));
+      }
+    }
+    return [...new Set([minimum, maximum].filter(finite))];
+  }
+
   function surfaceFigure({ x, y, z, xTitle = '', yTitle = '', zTitle = '',
     formatX = String, formatY = String, formatZ = String, current = null,
     revision = 'surface', heatmap = false, width = 800, document: documentRef = document,
-    camera = surfaceCamera() } = {}) {
+    camera = surfaceCamera(), showColorbar = true } = {}) {
     const domain = surfaceDomain(z);
     if (!domain) throw new Error('surface_has_no_values');
     const palette = colors(documentRef), narrow = width < 540;
@@ -167,12 +183,13 @@
       showline: true, linecolor: palette.rule, ticks: 'outside', tickcolor: palette.rule,
       ...(values ? { tickmode: 'array', tickvals: values, ticktext: values.map(formatter) } : {}),
     });
-    const sampled = values => values.filter((_, index) => index === 0 || index === values.length - 1 || (!narrow && index % Math.max(1, Math.ceil(values.length / 4)) === 0));
+    const xTicks = surfaceAxisTicks(x, narrow ? 3 : 5), yTicks = surfaceAxisTicks(y, narrow ? 3 : 5);
     const customdata = y.map((yv, j) => x.map((xv, i) => [formatX(xv), formatY(yv), finite(z[j]?.[i]) ? formatZ(z[j][i]) : '不适用']));
     const hovertemplate = `${escape(xTitle)}：%{customdata[0]}<br>${escape(yTitle)}：%{customdata[1]}<br>${escape(zTitle)}：%{customdata[2]}<extra></extra>`;
     const trace = {
       type: heatmap ? 'heatmap' : 'surface', x, y, z, customdata, hovertemplate,
-      colorscale: valueColorscale(domain.min, domain.max, palette), colorbar, connectgaps: false,
+      colorscale: valueColorscale(domain.min, domain.max, palette), colorbar, showscale: showColorbar,
+      connectgaps: false,
       ...(heatmap ? { zmin: domain.min, zmax: domain.max, zsmooth: false, hoverongaps: false } : {
         cmin: domain.min, cmax: domain.max,
         contours: { x: { show: false }, y: { show: false }, z: { show: false } },
@@ -185,7 +202,7 @@
       traces[0] = { type: 'scatter3d', mode: 'markers', x: points.map(p => p.x), y: points.map(p => p.y), z: points.map(p => p.z),
         customdata: points.map(p => p.custom), hovertemplate,
         marker: { size: 4, color: points.map(p => p.z), cmin: domain.min, cmax: domain.max,
-          colorscale: trace.colorscale, showscale: true, colorbar }, showlegend: false };
+          colorscale: trace.colorscale, showscale: showColorbar, colorbar }, showlegend: false };
     }
     if (current && [current.x, current.y, current.z].every(finite)) traces.push({
       type: heatmap ? 'scatter' : 'scatter3d', mode: 'markers', name: '当前参考点',
@@ -195,34 +212,81 @@
       hovertemplate: '<b>当前参考点</b><br>' + hovertemplate, showlegend: false,
     });
     const layout = {
-      autosize: true, margin: { l: heatmap ? 60 : 0, r: narrow ? 12 : 94, t: 12, b: narrow ? 72 : (heatmap ? 48 : 12) },
+      autosize: true,
+      margin: { l: heatmap ? 60 : 0, r: narrow || !showColorbar ? 12 : 94, t: 12,
+        b: narrow && showColorbar ? 72 : (heatmap ? 48 : 12) },
       paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: textFont(12, palette.ink),
       showlegend: false, hoverlabel: { bgcolor: palette.paper, bordercolor: palette.rule, font: textFont(12, palette.ink), align: 'left' },
       uirevision: revision,
       ...(heatmap ? {
-        xaxis: axis(xTitle, sampled(x), formatX), yaxis: axis(yTitle, sampled(y), formatY),
+        xaxis: axis(xTitle, xTicks, formatX), yaxis: axis(yTitle, yTicks, formatY),
       } : { scene: {
         bgcolor: 'rgba(0,0,0,0)', dragmode: 'orbit', aspectmode: 'manual',
         aspectratio: { x: 1.5, y: 1, z: .68 }, camera, uirevision: revision,
-        xaxis: axis(xTitle, sampled(x), formatX), yaxis: axis(yTitle, sampled(y), formatY),
+        xaxis: axis(xTitle, xTicks, formatX), yaxis: axis(yTitle, yTicks, formatY),
         zaxis: axis(zTitle, ticks, formatZ),
       } }),
     };
     return { traces, layout };
   }
 
-  const plotly = () => {
-    if (!window.Plotly?.newPlot || !window.Plotly?.react) {
-      throw new Error("plotly_unavailable");
+  const plotly = () => window.Plotly?.newPlot && window.Plotly?.react ? window.Plotly : null;
+  const deferredScript = globalThis.document?.getElementById?.("plotly-runtime")?.content?.querySelector("script");
+  let plotlyLoad;
+  const pendingRenders = new WeakMap();
+  const webglWatchers = new WeakMap();
+
+  const loadPlotly = () => {
+    if (!deferredScript) return Promise.reject(new Error("plotly_unavailable"));
+    if (!plotlyLoad) {
+      plotlyLoad = new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        const src = deferredScript.getAttribute("src");
+        const finish = () => {
+          const runtime = plotly();
+          if (runtime) resolve(runtime);
+          else {
+            script.remove();
+            reject(new Error("plotly_unavailable"));
+          }
+        };
+        if (src) {
+          script.src = src;
+          script.onload = finish;
+          script.onerror = finish;
+        } else {
+          // The offline demo inlines the deferred asset inside the same template.
+          script.textContent = deferredScript.textContent;
+        }
+        document.head.append(script);
+        if (!src) finish();
+      }).catch(error => {
+        plotlyLoad = null;
+        throw error;
+      });
     }
-    return window.Plotly;
+    return plotlyLoad;
   };
 
   const render = (node, traces, layout, overrides = {}) => {
-    try {
-      const runtime = plotly();
+    const draw = (runtime) => {
       const operation = node._fullLayout ? runtime.react : runtime.newPlot;
-      return Promise.resolve(operation.call(runtime, node, traces, layout, { ...config, ...overrides }));
+      return operation.call(runtime, node, traces, layout, { ...config, ...overrides });
+    };
+    try {
+      pendingRenders.delete(node);
+      const runtime = plotly();
+      if (runtime) return Promise.resolve(draw(runtime));
+      const token = {};
+      pendingRenders.set(node, token);
+      const isCurrent = () => pendingRenders.get(node) === token;
+      return loadPlotly().then(ready => {
+        if (isCurrent()) return draw(ready);
+      }, error => {
+        if (isCurrent()) throw error;
+      }).finally(() => {
+        if (isCurrent()) pendingRenders.delete(node);
+      });
     } catch (error) {
       return Promise.reject(error);
     }
@@ -230,6 +294,8 @@
 
   const purge = (node) => {
     if (!node) return;
+    pendingRenders.delete(node);
+    webglWatchers.get(node)?.();
     try {
       if (window.Plotly?.purge && node._fullLayout) window.Plotly.purge(node);
     } catch (_error) {
@@ -259,14 +325,23 @@
   };
 
   const watchWebglLoss = (node, onLost) => {
-    for (const canvas of node.querySelectorAll("canvas")) {
-      if (canvas.dataset.optionhelperWebglWatch === "true") continue;
-      canvas.dataset.optionhelperWebglWatch = "true";
-      canvas.addEventListener("webglcontextlost", (event) => {
+    webglWatchers.get(node)?.();
+    const handlers = Array.from(node.querySelectorAll("canvas"), canvas => {
+      const lost = (event) => {
+        if (!node.contains(canvas)) return;
         event.preventDefault();
+        unwatch();
         onLost?.();
-      }, { once: true });
-    }
+      };
+      canvas.addEventListener("webglcontextlost", lost, { once: true });
+      return () => canvas.removeEventListener("webglcontextlost", lost);
+    });
+    const unwatch = () => {
+      handlers.forEach(remove => remove());
+      if (webglWatchers.get(node) === unwatch) webglWatchers.delete(node);
+    };
+    webglWatchers.set(node, unwatch);
+    return unwatch;
   };
 
   window.OptionHelperPlotlyCharts = Object.freeze({
