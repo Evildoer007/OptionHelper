@@ -1569,7 +1569,13 @@ def call_tool_from_app(
     else:
         source = dict(_business_request_source(payload))
         if action == "fetch" and source.get("provider") != "local" and source.get("source_priority") not in (["local"], ("local",), "local"):
-            source.update(provider=selected_provider, source_priority=[selected_provider])
+            try:
+                requested = DataRequest.from_mapping(source)
+            except ValueError as error:
+                raise RequestValidationError(str(error)) from error
+            local_first = bool(requested.source_priority) and requested.source_priority[0].strip().lower() == "local"
+            priority = ["local", selected_provider] if local_first else [selected_provider]
+            source.update(provider=selected_provider, source_priority=priority)
     requires_secret = action in {"fetch_calendar", "test_connection"} or (
         action == "fetch" and _app_fetch_requires_secret(source)
     )
@@ -1606,12 +1612,12 @@ def call_tool_from_app(
                 with _VERIFIED_CONNECTIONS_LOCK:
                     _VERIFIED_CONNECTIONS.discard(verification_key)
             return {**status, "connection": {"provider_name": selected_provider, "status": error.code,
-                    "reason_code": error.reason_code, "detail": str(error)}}
+                    "reason_code": error.reason_code, "detail": str(error), "http_status": error.http_status}}
         if verification_key:
             with _VERIFIED_CONNECTIONS_LOCK:
                 _VERIFIED_CONNECTIONS.add(verification_key)
         return {**status, "connection": {"provider_name": selected_provider, "status": "available",
-                "detail": "数据连接及交易日历接口验证通过，行情与复权权限以实际请求为准。"}}
+                "detail": "沪深300日线与交易日历验证通过。个股、ETF与复权权限以实际请求为准。"}}
     if action == "test_connection":
         def failed_connection(error: ProviderError, status_name: str, detail: str) -> dict[str, Any]:
             if verification_key is not None:
