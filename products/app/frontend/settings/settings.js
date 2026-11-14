@@ -1,4 +1,4 @@
-import { clearMessage, enhanceSelects, message, notifyModelConfigurationChanged, request, safeJson } from "/app/frontend/shared/app.js";
+import { clearMessage, enhanceSelects, message, notifyModelConfigurationChanged, request, safeJson, setMessageActionIcon } from "/app/frontend/shared/app.js";
 import { applyServerThemePreference, currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 import { setScale } from "/app/frontend/shared/ui-scale.js";
 
@@ -20,20 +20,56 @@ const returnToWorkspace = returnCandidate?.origin === location.origin
   ? `${returnCandidate.pathname}${returnCandidate.search}${returnCandidate.hash}`
   : "/optchat";
 if (settingsClose) settingsClose.href = returnToWorkspace;
-if (window.parent !== window && new URLSearchParams(location.search).get("embedded") === "1") {
+const settingsParams = new URLSearchParams(location.search);
+const embeddedSettings = window.parent !== window && settingsParams.get("embedded") === "1";
+function notifySettingsHost(type, detail = {}) {
+  if (embeddedSettings) window.parent.postMessage({ type, loadId: settingsParams.get("load_id"), ...detail }, location.origin);
+}
+if (embeddedSettings) {
   document.documentElement.dataset.settingsEmbedded = "true";
-  const closeEmbeddedSettings = () => window.parent.postMessage({ type: "optionhelper.settings-close" }, location.origin);
-  settingsClose?.addEventListener("click", event => { event.preventDefault(); closeEmbeddedSettings(); });
+  const closeEmbeddedSettings = (input) => notifySettingsHost("optionhelper.settings-close", { input });
+  settingsClose?.addEventListener("click", event => {
+    event.preventDefault();
+    closeEmbeddedSettings(event.detail > 0 ? "pointer" : "keyboard");
+  });
   document.addEventListener("keydown", event => {
     if (event.key !== "Escape" || document.querySelector("dialog[open], .choice[data-open='true']")) return;
     event.preventDefault();
-    closeEmbeddedSettings();
+    closeEmbeddedSettings("keyboard");
   });
 }
 
 
-const session = await request("/api/me").catch(() => { location.assign("/"); return null; });
-if (!session) throw new Error("登录状态无效");
+const settingsOptions = document.querySelector(".settings-options");
+const settingsStatus = document.querySelector(".settings-load-status");
+const startupDeadline = new AbortController();
+const startupTimer = window.setTimeout(() => startupDeadline.abort(), 5000);
+const initialRequest = path => request(path, { signal: startupDeadline.signal });
+const showSettingsLoadStatus = text => {
+  settingsStatus.textContent = text;
+  settingsStatus.hidden = !text;
+};
+function settingsLoadFailed(error) {
+  if (embeddedSettings) notifySettingsHost("optionhelper.settings-failed");
+  else if (error.status === 401 || error.status === 403) location.assign("/");
+  else showSettingsLoadStatus("设置未能加载，请刷新重试。");
+}
+
+setActiveSection(location.hash.slice(1) || "preferences");
+showSettingsLoadStatus("正在读取设置…");
+notifySettingsHost("optionhelper.settings-ready");
+const [session, settingsResponse] = await Promise.all([
+  initialRequest("/api/me"), initialRequest("/api/settings"),
+]).catch(error => {
+  startupDeadline.abort();
+  settingsLoadFailed(error);
+  throw error;
+}).finally(() => window.clearTimeout(startupTimer));
+if (!Array.isArray(session?.capabilities) || !settingsResponse?.settings) {
+  const error = new Error("设置响应不完整");
+  settingsLoadFailed(error);
+  throw error;
+}
 
 const canEditModel = session.capabilities.includes("settings.model.local.write") || session.capabilities.includes("settings.model.write");
 const canManageData = session.capabilities.includes("settings.data.write") || session.capabilities.includes("settings.data.local.write");
@@ -291,8 +327,8 @@ function renderProviders() {
   enhanceSelects(modelRoot);
 }
 
-async function refreshProviders() {
-  const response = await request("/api/settings/model-providers");
+async function refreshProviders(signal) {
+  const response = await request("/api/settings/model-providers", { signal });
   providerState = { ...providerState, ...response, openProviderId: providerState.openProviderId };
   const selection = providerState.default_model_selection || {};
   const selectedProvider = providerState.providers.find((provider) => provider.provider_id === selection.provider_id);
@@ -357,11 +393,13 @@ function renderDataProbe() {
   dataStatus.classList.toggle("is-ready", Boolean(dataProbe?.verified));
 }
 
-async function refreshRuntimeStatus() {
+async function refreshRuntimeStatus(signal) {
   const button = document.querySelector("#refresh-runtime");
   if (button) button.disabled = true;
   try {
-    const [health, capability] = await Promise.all([request("/api/health"), request("/api/capability/status")]);
+    const [health, capability] = await Promise.all([
+      request("/api/health", { signal }), request("/api/capability/status", { signal }),
+    ]);
     runtimeHost.textContent = health.status === "ok" ? "可用" : "异常";
     runtimeHostDetail.textContent = health.mode === "local" ? "应用服务响应正常。" : `运行模式：${health.mode || "未知"}。`;
     const pages = Array.isArray(capability.capability?.pages) ? capability.capability.pages : [];
@@ -428,7 +466,8 @@ function presetDiagram(preset) {
   const id = `preset-${preset.preset_id.replace(/[^a-z0-9-]/g, "")}`;
   const arrow = `${id}-arrow`;
   const viewBox = ["single-agent", "constraint-ranking"].includes(preset.preset_id) ? "0 0 560 220" : "0 0 560 160";
-  const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node ${accent ? "is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="48" rx="8"/><text x="${x + width / 2}" y="${y + 29}" text-anchor="middle">${label}</text></g>`;
+  const nodeHeight = 48;
+  const node = (x, y, width, label, accent = false) => `<g class="preset-diagram__node${accent ? " is-accent" : ""}"><rect x="${x}" y="${y}" width="${width}" height="${nodeHeight}" rx="8"/><text x="${x + width / 2}" y="${y + nodeHeight / 2}" text-anchor="middle" dominant-baseline="central">${label}</text></g>`;
   let body = "";
   if (preset.preset_id === "single-agent") {
     body = `<g class="preset-diagram__links">
@@ -452,7 +491,16 @@ function presetDiagram(preset) {
       <text x="496" y="133">通过</text>
     </g>`;
   } else if (preset.preset_id === "product-trader-loop") {
-    body = `<g class="preset-diagram__links"><path d="M132 44H176" marker-end="url(#${arrow})"/><path d="M384 44H428" marker-end="url(#${arrow})"/><path d="M488 68V100" marker-end="url(#${arrow})"/><path d="M428 84H84Q72 84 72 72V68" fill="none" stroke-dasharray="5 4" marker-end="url(#${arrow})"/></g>${node(12, 20, 120, "Structurer", true)}${node(176, 20, 208, "计算模块")}${node(428, 20, 120, "Trader")}${node(428, 100, 120, "Reviewer")}`;
+    body = `<g class="preset-diagram__links">
+      <path d="M156 40H208" marker-end="url(#${arrow})"/>
+      <path d="M352 40H404" marker-end="url(#${arrow})"/>
+      <path d="M476 64V96" marker-end="url(#${arrow})"/>
+      <path d="M448 64V72Q448 80 440 80H92Q84 80 84 72V64" stroke-dasharray="5 4" marker-end="url(#${arrow})"/>
+    </g>
+    ${node(12, 16, 144, "Structurer", true)}
+    ${node(208, 16, 144, "计算模块")}
+    ${node(404, 16, 144, "Trader")}
+    ${node(404, 96, 144, "Reviewer")}`;
   } else if (preset.preset_id === "independent-council") {
     body = `<g class="preset-diagram__links"><path d="M124 80H152"/><path d="M152 80V44H176" marker-end="url(#${arrow})"/><path d="M152 80V124H176" marker-end="url(#${arrow})"/><path d="M288 44H348V80"/><path d="M288 124H348V80"/><path d="M348 80H428" marker-end="url(#${arrow})"/></g>${node(12, 56, 112, "Framer", true)}${node(176, 20, 112, "Matcher")}${node(176, 100, 112, "Hedger")}${node(428, 56, 116, "Moderator", true)}`;
   } else if (preset.preset_id === "constraint-ranking") {
@@ -460,10 +508,11 @@ function presetDiagram(preset) {
   } else {
     body = `<text class="preset-diagram__empty" x="280" y="84" text-anchor="middle">暂未提供可视化说明</text>`;
   }
-  return `<figure class="multi-agent-preset-diagram" data-preset-diagram role="button" tabindex="0" aria-label="放大查看${escapeHtml(preset.display_name)}模式图"><svg viewBox="${viewBox}" role="img" aria-labelledby="${id}-title ${id}-desc"><title id="${id}-title">${escapeHtml(preset.display_name)}：${escapeHtml(presentation.summary)}</title><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
+  return `<figure class="multi-agent-preset-diagram" data-preset-diagram role="button" tabindex="0" aria-label="放大查看${escapeHtml(preset.display_name)}模式图"><svg viewBox="${viewBox}" role="img" aria-label="${escapeHtml(preset.display_name)}" aria-describedby="${id}-desc"><desc id="${id}-desc">${escapeHtml(presentation.description)}</desc><defs><marker id="${arrow}" markerWidth="7" markerHeight="7" refX="7" refY="3.5" orient="auto"><path d="M0 0L7 3.5L0 7Z" fill="var(--color-muted)"/></marker></defs>${body}</svg><figcaption>${escapeHtml(presentation.summary)}<span>${escapeHtml(presentation.description)}</span></figcaption></figure>`;
 }
 
 let presetDiagramDialog = null;
+let presetDiagramInstance = 0;
 
 function closePresetDiagram() {
   if (presetDiagramDialog?.open) presetDiagramDialog.close();
@@ -479,17 +528,29 @@ function openPresetDiagram(source) {
   const diagram = source.querySelector("svg")?.cloneNode(true);
   dialog.className = "preset-diagram-dialog";
   dialog.setAttribute("aria-label", `放大查看${title}`);
+  const header = document.createElement("header");
   heading.textContent = title;
   content.className = "preset-diagram-dialog__content";
   close.type = "button";
   close.className = "preset-diagram-dialog__close";
-  close.setAttribute("aria-label", "关闭模式图");
-  close.textContent = "×";
+  close.autofocus = true;
+  setMessageActionIcon(close, "关闭模式图", "M6 6l12 12M18 6L6 18");
   if (diagram) {
-    diagram.removeAttribute("aria-labelledby");
+    const suffix = `-expanded-${++presetDiagramInstance}`;
+    const marker = diagram.querySelector("marker");
+    const description = diagram.querySelector("desc");
+    if (marker) {
+      marker.id += suffix;
+      diagram.querySelectorAll("[marker-end]").forEach(link => link.setAttribute("marker-end", `url(#${marker.id})`));
+    }
+    if (description) {
+      description.id += suffix;
+      diagram.setAttribute("aria-describedby", description.id);
+    }
     content.append(diagram);
   }
-  dialog.append(close, heading, content);
+  header.append(heading, close);
+  dialog.append(header, content);
   document.body.append(dialog);
   presetDiagramDialog = dialog;
   close.addEventListener("click", closePresetDiagram);
@@ -649,8 +710,8 @@ function renderReviewPolicies() {
   reviewPolicyRoot.innerHTML = `<div class="review-policy-head"><h3>复核方式</h3></div><div class="review-policy-list" role="radiogroup" aria-label="复核方式">${policyRows}</div>`;
 }
 
-async function refreshMultiAgentPresets() {
-  multiAgentState = normalizeMultiAgentState(await request("/api/settings/multi-agent-presets"));
+async function refreshMultiAgentPresets(signal) {
+  multiAgentState = normalizeMultiAgentState(await request("/api/settings/multi-agent-presets", { signal }));
   renderMultiAgentPresets();
 }
 
@@ -1108,7 +1169,7 @@ if (canManageData) {
   }
 }
 
-document.querySelector("#refresh-runtime")?.addEventListener("click", refreshRuntimeStatus);
+document.querySelector("#refresh-runtime")?.addEventListener("click", () => refreshRuntimeStatus(AbortSignal.timeout(7000)));
 document.querySelector("#verify-model-capability")?.addEventListener("click", async (event) => {
   const button = event.currentTarget;
   button.disabled = true;
@@ -1133,11 +1194,22 @@ document.querySelector("#verify-model-capability")?.addEventListener("click", as
 
 if (!canManageData) document.querySelector("#verify-data-connection")?.setAttribute("disabled", "");
 if (!canManageData) dataForm.querySelectorAll("input, select, button").forEach((control) => { control.disabled = true; });
-const settingsResponse = await request("/api/settings");
-applySettings(settingsResponse.settings);
-await refreshProviders();
-await refreshMultiAgentPresets();
-await refreshRuntimeStatus();
+try {
+  applySettings(settingsResponse.settings);
+} catch (error) {
+  settingsLoadFailed(error);
+  throw error;
+}
+settingsOptions.inert = false;
+showSettingsLoadStatus("");
+const settingsReadSignal = AbortSignal.timeout(7000);
+void refreshProviders(settingsReadSignal).catch(() => {
+  message(modelRoot, "模型配置读取失败，关闭后重新打开设置可重试。", true);
+});
+void refreshMultiAgentPresets(settingsReadSignal).catch(() => {
+  message(multiAgentRoot, "智能体预设读取失败，关闭后重新打开设置可重试。", true);
+});
+void refreshRuntimeStatus(settingsReadSignal);
 
 function updateDataSourceControls() {
   const compatible = dataForm.elements.source_brand.value === "tushare";
