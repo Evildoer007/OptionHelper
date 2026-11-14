@@ -104,11 +104,15 @@ def surface_svg(spec):
     for start, end in [(origin, project(1, 0, 0)), (origin, project(0, 1, 0)), (origin, project(0,0,1))]:
         out.append(f'<line x1="{start[0]:.2f}" y1="{start[1]:.2f}" x2="{end[0]:.2f}" y2="{end[1]:.2f}" stroke="#d7dce0"/>')
     for items, axis, unit in [(x, 'x', spec.get('x_axis_unit')), (y, 'y', spec.get('y_axis_unit'))]:
+        value_format = 'percent' if unit in {'decimal', 'decimal_rate'} else 'number'
+        whole_prices = value_format == 'number' and chart_axis_precision(items, axis_name=spec.get(f'{axis}_axis_name')) == 0
         for index in sorted(set((0, len(items) - 1))):
             if index < 0:
                 continue
             point = project(position(x,index), 0, 0) if axis == 'x' else project(0, position(y,index), 0)
-            value = number(items[index], 'percent' if unit in {'decimal', 'decimal_rate'} else None) if finite(items[index]) else items[index]
+            value = items[index]
+            if finite(value):
+                value = display_text(value, digits=0) if whole_prices else number(value, value_format)
             if axis == 'y' and index > 0:
                 label(point[0] - 12, point[1] - 7, value, 'end')
             else:
