@@ -731,6 +731,10 @@ class ToolGateway:
             return self._resolve_backtest_data_refs(
                 history_request, requested, identity, request_id=request_id, compute_payload=payload,
             )
+        selected_asset = payload.get("market_data_asset_id")
+        if selected_asset is not None:
+            requested = {"data_asset_id": selected_asset}
+        pinned = bool(selected_asset or isinstance(requested, Mapping) and requested.get("content_hash"))
         history_ref = None
         covering_history_resolver = getattr(self._data_assets, "resolve_market_history_covering", None)
         if history_ref is None and _empty_data_reference(requested) and callable(covering_history_resolver):
@@ -754,9 +758,26 @@ class ToolGateway:
                     schema_id="market-history",
                 )
             except UserActionError:
+                if pinned:
+                    raise
                 history_ref = None
 
-        if (
+        if pinned:
+            # A chosen revision has to satisfy the actual valuation window,
+            # independently of the default three-year acquisition horizon.
+            cutoff = str(history_request["end_date"])
+            coverage = history_ref.get("coverage", {}) if history_ref else {}
+            sessions = coverage.get("sessions", ())
+            prior_sessions = sorted({str(session) for session in sessions if str(session) <= cutoff})
+            config = payload.get("pricing_config", {})
+            window = config.get("hv_window", 20)
+            if (type(window) is not int or window < 2 or len(prior_sessions) <= window
+                or not _history_ref_covers_request(history_ref or {}, {
+                    **history_request, "start_date": prior_sessions[-window - 1], "end_date": cutoff,
+                })):
+                raise UserActionError("pinned_pricing_history_insufficient",
+                    "指定行情未覆盖估值日或缺少所需的日线与波动率样本。", stage="data")
+        elif (
             history_ref is not None
             and not _history_ref_covers_request(history_ref, history_request)
         ):
@@ -2392,6 +2413,7 @@ def _bind_current_input_to_history(
     )
     if history is None:
         return value
+    value.pop("market_data_asset_id", None)
     coverage = history.get("coverage")
     if not isinstance(coverage, Mapping):
         raise UserActionError(
@@ -3086,7 +3108,7 @@ def _require_conversation_data_request(action: str, payload: Mapping[str, Any]) 
 def _require_conversation_compute_request(tool_name: str, payload: Mapping[str, Any]) -> None:
     allowed = {"action", "task_id", "product_id", "identity", "term_overrides"}
     if tool_name == "pricer":
-        allowed.update({"pricing_config", "market_data_refs", "trading_calendar_ref", "pricing_objective"})
+        allowed.update({"pricing_config", "market_data_refs", "market_data_asset_id", "trading_calendar_ref", "pricing_objective"})
     elif tool_name == "backtester":
         allowed.update({"backtest_config", "historical_data"})
     _require_scope_fields(payload, allowed)
