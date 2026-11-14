@@ -944,7 +944,7 @@ class PricerRuntime:
         try:
             final_pricing_result = price(PricingInput(
                 contract=evaluated_contract,
-                pricing_config=frozen_config,
+                pricing_config=replace(frozen_config, spot=config.spot),
                 historical_data=historical,
                 market_data_refs=(data_ref,),
                 trading_calendar_data=calendar_data,
