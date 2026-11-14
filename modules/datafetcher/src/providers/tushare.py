@@ -145,6 +145,14 @@ class TushareProvider:
         return result
 
     def test_connection(self, config: DataFetcherConfig) -> None:
-        # An actual endpoint probe, not merely accepting the token's shape.
+        # Probe both the calendar and the ordinary daily-history path before
+        # reporting connectivity. Market-specific permissions can still vary.
         end = date.today() - timedelta(days=1)
-        self.fetch_calendar(CalendarRequest(asset_ids=("000300.SH",), start_date=(end-timedelta(days=6)).isoformat(), end_date=end.isoformat()), config)
+        start = end - timedelta(days=14)
+        self.fetch_calendar(CalendarRequest(
+            asset_ids=("000300.SH",), start_date=start.isoformat(), end_date=end.isoformat(),
+        ), config)
+        self.fetch(DataRequest(
+            asset_ids=("000300.SH",), start_date=start.isoformat(), end_date=end.isoformat(), fields=("close",),
+            provider=self.name, source_priority=(self.name,), adjustment="none",
+        ), config)
