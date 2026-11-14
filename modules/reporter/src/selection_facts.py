@@ -40,6 +40,7 @@ def build_host_selection_source_refs(source: Mapping[str, Any], tenant_id: str) 
                 "underlyings", "currency", "price_convention", "supplemental_sections",
             ) if raw.get(key) is not None},
             "rank": int(raw.get("rank") or 1),
+            **({"is_primary": raw["is_primary"]} if isinstance(raw.get("is_primary"), bool) else {}),
             "reason": str(raw.get("reason") or "").strip(),
             "suitable_for": list(raw.get("suitable_for", [])) if isinstance(raw.get("suitable_for"), list) else [],
             "not_suitable_for": list(raw.get("not_suitable_for", [])) if isinstance(raw.get("not_suitable_for"), list) else [],
