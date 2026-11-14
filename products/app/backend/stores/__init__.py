@@ -47,7 +47,8 @@ class _LocalDocumentStore:
             # Prefix it before any store creates or reads nested artifacts.
             self._root = Path(_windows_extended_path(str(self._root)))
         self._root.mkdir(parents=True, exist_ok=True)
-        self._lock = RLock()
+        self._locks = {name: RLock() for name in self._FILES}
+        self._cache_lock = RLock()
         self._record_cache = None
         self._migrate_task_model_current_input_v1()
 
@@ -107,7 +108,7 @@ class _LocalDocumentStore:
 
     def read(self, name: str) -> dict[str, Any]:
         self._validate_name(name)
-        with self._lock:
+        with self._locks[name]:
             path = self._path(name)
             if not path.exists():
                 return {}
@@ -128,28 +129,37 @@ class _LocalDocumentStore:
         Full reads and writes never borrow this mutable private snapshot.
         """
         self._validate_name(name)
-        with self._lock:
+        with self._locks[name]:
             path = self._path(name)
             try:
                 stat = path.stat()
             except FileNotFoundError:
-                self._record_cache = None
+                self._invalidate_record_cache(name)
                 return None
             signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
-            cached = self._record_cache
+            with self._cache_lock:
+                cached = self._record_cache
             if cached is None or cached[0] != name or cached[1] != signature:
-                self._record_cache = None
                 records = self.read(name)
                 # A large collection remains readable without retaining an
                 # unbounded index in memory. Typical histories fit this bound.
                 if stat.st_size <= 256 * 1024 * 1024:
-                    self._record_cache = (name, signature, records)
+                    with self._cache_lock:
+                        self._record_cache = (name, signature, records)
+                else:
+                    self._invalidate_record_cache(name)
             else:
                 records = cached[2]
             return deepcopy(records.get(key))
 
+    def _invalidate_record_cache(self, name: str) -> None:
+        with self._cache_lock:
+            if self._record_cache is not None and self._record_cache[0] == name:
+                self._record_cache = None
+
     def update(self, name: str, mutator: Callable[[dict[str, Any]], dict[str, Any] | None]) -> dict[str, Any]:
-        with self._lock:
+        self._validate_name(name)
+        with self._locks[name]:
             value = self.read(name)
             replacement = mutator(value)
             updated = value if replacement is None else replacement
@@ -164,8 +174,7 @@ class _LocalDocumentStore:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary_name, target)
-                if self._record_cache is not None and self._record_cache[0] == name:
-                    self._record_cache = None
+                self._invalidate_record_cache(name)
             finally:
                 if os.path.exists(temporary_name):
                     os.unlink(temporary_name)
