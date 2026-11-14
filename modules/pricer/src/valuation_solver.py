@@ -88,6 +88,7 @@ def price(pricing_input: PricingInput) -> PricingResult:
             )
         snapshot = {
             **snapshot,
+            "spot_input_source": "manual" if config.spot is not None else "market_close",
             # Keep the request, its market-data-effective trading session,
             # and the last usable market quote explicit.  When no current
             # close exists, effective valuation must fall back to the quote
@@ -127,6 +128,7 @@ def price(pricing_input: PricingInput) -> PricingResult:
             "asset_ids": list(data_ref.asset_ids),
             "normalized_fields": list(data_ref.normalized_fields),
             "coverage": dict(data_ref.coverage),
+            "provider": data_ref.lineage.get("provider"),
         }
         snapshot = {**dict(snapshot or {}), "data_ref": reference}
     if calendar_ref is not None:
@@ -168,8 +170,8 @@ def price(pricing_input: PricingInput) -> PricingResult:
         provenance = {
             key: snapshot[key]
             for key in (
-                "source_ref", "history_start_date", "history_end_date", "spot_price_field", "hv_price_field", "hv_fields_by_asset",
-                "return_method", "annualization_trading_days", "data_ref", "trading_calendar",
+                "source_ref", "history_start_date", "history_end_date", "spot_input_source", "spot_price_field", "hv_price_field", "hv_fields_by_asset",
+                "return_method", "annualization_trading_days", "hv_price_start_date", "hv_price_end_date", "data_ref", "trading_calendar",
                 "trading_calendar_ref", "data_lineage", "requested_valuation_date",
                 "effective_valuation_session", "effective_maturity_session", "market_as_of_date",
             )
