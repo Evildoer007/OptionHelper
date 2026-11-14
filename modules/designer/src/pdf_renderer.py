@@ -21,7 +21,7 @@ from xml.etree import ElementTree
 
 from .design_tokens import TOKENS
 from .system_fonts import windows_font_candidates
-from .renderer import display_text, chart_axis_precision, chart_category
+from .renderer import display_text, chart_axis_precision, chart_category, numeric_line_axis
 
 
 REPORTLAB_VERSION = "5.0.0"
@@ -1238,6 +1238,8 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
         from .components.surface import surface_svg
         return _svg_flowable(surface_svg(spec), content_width=content_width, latin_font=latin_font, cjk_font=cjk_font)
     x_values = list(spec.get("x") or [])
+    horizontal = numeric_line_axis(x_values, spec.get("x_axis_name")) if chart_type == "line" else None
+    x_positions = horizontal[0] if horizontal else None
     y_values = list(spec.get("y") or [])
     series = list(spec.get("series") or [])
     width = content_width
@@ -1277,6 +1279,15 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
             canvas = self.canv
             left, right, top, bottom = 44.0, 16.0, 20.0, 34.0
             plot_width, plot_height = max(1.0, self.width - left - right), max(1.0, self.height - top - bottom)
+            count = max(1, len(x_values) - 1)
+
+            def x_at(index: int) -> float:
+                if chart_type in {"bar", "heatmap"}:
+                    return left + plot_width * (index + .5) / max(1, len(x_values))
+                index = min(index, count)
+                ratio = x_positions[index] if x_positions is not None else index / count
+                return left + plot_width * ratio
+
             canvas.saveState()
             canvas.setFillColor(colors.HexColor(TOKEN_COLORS["paper"]))
             canvas.setStrokeColor(colors.HexColor(TOKEN_COLORS["rule_strong"]))
@@ -1321,7 +1332,6 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                     canvas.setDash(2, 2)
                     canvas.line(left, y, left + plot_width, y)
                 canvas.setDash()
-                count = max(1, len(x_values) - 1)
                 for series_index, entry in enumerate(series):
                     points = []
                     for index, item in enumerate(list(entry.get("data") or [])):
@@ -1329,8 +1339,7 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                         if value is None:
                             points.append(None)
                             continue
-                        x = (left + plot_width * (index + .5) / max(1, len(x_values)) if chart_type == "bar"
-                             else left + plot_width * min(index, count) / count)
+                        x = x_at(index)
                         y = bottom + (value - low) / (high - low) * plot_height
                         points.append((x, y))
                     color = colors.HexColor(palette[series_index % len(palette)])
@@ -1366,15 +1375,17 @@ def _chart_flowable(spec: Mapping[str, Any], *, content_width: float, latin_font
                     value = low + (high - low) * tick / 4
                     label = display_text(value, spec.get("value_format"), digits=y_digits) + str(spec.get("value_suffix") or "")
                     _draw_chart_tick(canvas, left - 5, bottom + plot_height * tick / 4 - 2, label, font=latin_font, size=6.8)
-                if x_values:
-                    x_digits = chart_axis_precision(x_values)
-                    labels = [chart_category(x_values[index], spec.get("x_axis_name"), digits=x_digits) for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))]
-                    for index, label in enumerate(labels):
-                        source_index = index * max(1, math.ceil(len(x_values) / 6))
-                        x = (left + plot_width * (source_index + .5) / len(x_values) if chart_type == "bar"
-                             else left + plot_width * source_index / count)
-                        canvas.setFont(cjk_font if any(not char.isascii() for char in label) else latin_font, 6.8)
-                        canvas.drawCentredString(x, bottom - 12, label[:12])
+            if x_values:
+                ticks = [(value, left + plot_width * ratio) for value, ratio in horizontal[1]] if horizontal else [
+                    (x_values[index], x_at(index))
+                    for index in range(0, len(x_values), max(1, math.ceil(len(x_values) / 6)))
+                ]
+                x_digits = chart_axis_precision(x_values, axis_name=spec.get("x_axis_name"))
+                canvas.setFillColor(colors.HexColor(TOKEN_COLORS["muted"]))
+                for value, x in ticks:
+                    label = chart_category(value, spec.get("x_axis_name"), digits=x_digits)
+                    canvas.setFont(cjk_font if any(not char.isascii() for char in label) else latin_font, 6.8)
+                    canvas.drawCentredString(x, bottom - 12, label[:12])
             title = str(spec.get("title") or "图表")
             canvas.setFont(cjk_font if any(not char.isascii() for char in title) else latin_font, 8.5)
             canvas.setFillColor(colors.HexColor(TOKEN_COLORS["ink_soft"]))
