@@ -107,6 +107,7 @@ FRONTEND_ASSETS = frozenset({
     "login/index.html", "login/login-startup.js", "login/login.js",
     "shared/app-request.js",
     "optchat/index.html", "optchat/optchat.js", "optchat/attachment-utils.js", "optchat/video-attachments.js",
+    "shared/workspace-history.js", "shared/workspace-mode-motion.js",
     "optdesk/index.html", "optdesk/optdesk.js",
     "settings/index.html", "settings/settings.js", "settings/model-providers.css", "settings/general-settings.css", "settings/settings-shell.css",
     "shared/styles.css", "shared/refinement.css", "shared/theme-overrides.css", "shared/app.js", "shared/transition-scope.js", "shared/theme-bootstrap.js", "shared/theme.js", "shared/ui-scale.js", "shared/scrollbar-activity.js", "shared/vol-surface.js", "shared/thinking-orb.js", "shared/thinking-orbs-engine.js", "shared/bloub-engine.js", "shared/bloub-avatar.js", "shared/activity-motion.js",
@@ -1627,7 +1628,8 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/tasks":
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
-            tasks = self.app.tasks.list(identity)
+            summary = parse_qs(parsed.query).get("view", [""])[0] == "summary"
+            tasks = self.app.tasks.list(identity, summary=summary)
             active = self.app.operations.active_summaries(identity, [str(task["task_id"]) for task in tasks])
             self._json(HTTPStatus.OK, {"tasks": [{**task, "active_operations": active.get(str(task["task_id"]), [])} for task in tasks]})
             return
@@ -1645,7 +1647,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/operations").rstrip("/")
-            self.app.tasks.get(identity, task_id)
+            self.app.tasks.require_owned(identity, task_id)
             include_result = parse_qs(parsed.query).get("include_result", ["false"])[0].strip().casefold() in {"1", "true", "yes"}
             self._json(HTTPStatus.OK, {
                 "operations": [
@@ -1660,7 +1662,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             task_id, operation_id = path.removeprefix("/api/tasks/").removesuffix("/result").split("/operations/", 1)
             if not task_id or not operation_id or "/" in operation_id:
                 raise KeyError(path)
-            self.app.tasks.get(identity, task_id)
+            self.app.tasks.require_owned(identity, task_id)
             operation = self.app.operations.get(identity, operation_id)
             if operation.task_id != task_id:
                 raise KeyError(path)
@@ -1684,7 +1686,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             task_id, operation_id = path.removeprefix("/api/tasks/").split("/operations/", 1)
             if not task_id or not operation_id or "/" in operation_id:
                 raise KeyError(path)
-            self.app.tasks.get(identity, task_id)
+            self.app.tasks.require_owned(identity, task_id)
             operation = self.app.operations.get(identity, operation_id)
             if operation.task_id != task_id:
                 raise KeyError(path)
@@ -1711,14 +1713,14 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/reports").rstrip("/")
-            self.app.tasks.get(identity, task_id)
+            self.app.tasks.require_owned(identity, task_id)
             self._json(HTTPStatus.OK, {"reports": self.app.results.list_report_runs(identity, task_id)})
             return
         if path.startswith("/api/tasks/") and path.endswith("/attachment-drafts"):
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
             task_id = path.removeprefix("/api/tasks/").removesuffix("/attachment-drafts").rstrip("/")
-            self.app.tasks.get(identity, task_id)
+            self.app.tasks.require_owned(identity, task_id)
             self._json(HTTPStatus.OK, {"attachments": self.app.tasks.pending_attachment_uploads(identity, task_id)})
             return
         if path.startswith("/api/tasks/") and "/attachments/" in path:
@@ -1917,7 +1919,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             task_id = query.get("task_id", [None])[0]
             analysis_case_id = query.get("analysis_case_id", [None])[0]
             if task_id is not None:
-                self.app.tasks.get(identity, task_id)
+                self.app.tasks.require_owned(identity, task_id)
             self._json(HTTPStatus.OK, {
                 "context": self.app.registry.host_context(
                     identity,
@@ -2300,6 +2302,12 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             if body.get("background") is True:
                 content = str(body.get("content", ""))
                 conversation_request_id = self.headers.get("X-Request-Id")
+                settings = self.app.settings_for(identity)
+                research_settings = {
+                    "mode": settings.recommendation_execution_mode,
+                    "preset_id": settings.multi_agent_recommendation_preset_id,
+                    "research_depth": settings.research_depth,
+                }
                 operation = self.app.operations.submit(
                     identity,
                     task_id=task_id,
@@ -2308,7 +2316,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                     operation=lambda cancelled: _dispatch_background_conversation(
                         self.app.conversations, identity, task_id, content,
                         request_id=conversation_request_id, selection=model_selection,
-                        attachments=attachments, cancelled=cancelled,
+                        attachments=attachments, cancelled=cancelled, research_settings=research_settings,
                     ),
                     request_id=conversation_request_id or None,
                     input_hash=_json_hash({"content": content, "attachments": attachments, "model_selection": body.get("model_selection"), "followup_mode": body.get("followup_mode", "queue")}) if conversation_request_id else None,
@@ -3597,12 +3605,14 @@ def _dispatch_background_conversation(
     selection: ModelSelection | None,
     attachments: list[dict[str, Any]],
     cancelled: Callable[[], bool],
+    research_settings: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Persist the normal conversation response while its view is absent."""
     if cancelled():
         raise OperationCancelled()
     response = conversations.respond(
         identity, task_id, content, request_id=request_id, selection=selection, attachments=attachments, cancelled=cancelled,
+        **({"research_settings": research_settings} if research_settings else {}),
     )
     if response.get("status") == "cancelled":
         raise OperationCancelled()
