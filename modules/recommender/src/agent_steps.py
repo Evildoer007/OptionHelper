@@ -17,6 +17,10 @@ from .product_trader_loop import DEFAULT_TERM_KEYS, TEXT_TERM_KEYS, _controlled_
 
 # One source for the model-facing array schema and the Host allowlist.
 EVALUATION_MODULES = ("payoffer", "pricer", "backtester")
+PROPOSAL_FIELDS = frozenset({
+    "product_id", "product_name", "underlyings", "reason", "suitable_for", "not_suitable_for",
+    "main_risks", "library_status", "evidence_ref_ids", "missing_inputs", "term_overrides",
+})
 STRUCTURER_PLAN_SCHEMA = {
     "type": "array",
     "items": {
@@ -284,13 +288,15 @@ class AgentStepRunner:
             and role in {"Structurer", "Generator", "Matcher", "Hedger", "Moderator", "Selector"}
             and payload.get("phase") != "finalize"):
             request["proposal_term_context"] = self.proposal_context_provider(role, request)
-        if role in {'Generator', 'Structurer', 'Selector'} and not payload.get('phase'):
+        phase = payload.get('phase')
+        if ((role in {'Generator', 'Structurer', 'Selector', 'Moderator'} and not phase)
+            or (role in {'Matcher', 'Hedger'} and phase in {'proposal', 'candidate_repair'} and payload.get('comparison_scope'))):
             prompt = payload.get('case', {}).get('prompt', '')
             catalog = self.catalog_provider(role, request) if self.catalog_provider else payload.get('evidence', ())
-            scope = requested_comparison_products(prompt, catalog or ())
+            scope = payload.get('comparison_scope') or requested_comparison_products(prompt, catalog or ())
             if scope:
                 request['comparison_subjects'] = scope
-                request['comparison_rule'] = ('逐项提出用户点名的比较产品，不能自行遗漏或用允许收益封顶排除买入看涨。'
+                request['comparison_rule'] = ('逐项且仅提出用户点名的比较产品，不能自行新增、替换或漏掉结构。'
                     '可行条款未确定时明确说明缺口；已授权研究假设或部分投入时先检查登记参数与quantity_bound。'
                     '不把市场报价缺失误写为产品库缺失，不虚构满足预算。')
         return port_role, request
@@ -299,6 +305,8 @@ class AgentStepRunner:
         if self.input_validator is not None:
             self.input_validator()
         catalog = self.catalog_provider(role, request) if self.catalog_provider else None
+        if self.catalog_provider is not None:
+            result = _project_catalog_proposals(result, catalog)
         if callable(self.term_validator) and isinstance(result, Mapping):
             errors = []
             for collection in ("proposals", "evaluation_plan"):
@@ -317,9 +325,12 @@ class AgentStepRunner:
         _validate_request_result(role, request, result, catalog_evidence=catalog)
         expected = set(request.get('comparison_subjects', {}))
         if expected and isinstance(result.get('proposals'), list):
-            missing = expected-{row['product_id'] for row in result['proposals']}
-            if missing:
-                raise _MissingComparisonCandidate('遗漏用户点名的比较产品：'+','.join(sorted(missing)))
+            actual = {row['product_id'] for row in result['proposals']}
+            if expected != actual:
+                raise _MissingComparisonCandidate(
+                    '候选需与指定范围一致。缺少：'+','.join(sorted(expected-actual))
+                    +'。超出范围：'+','.join(sorted(actual-expected)))
+        return result
 
     def accept(
         self,
@@ -331,20 +342,22 @@ class AgentStepRunner:
         audit_detail: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
         try:
-            self.validate_output(role, request, step.result)
-            result = self.receipt_ledger.validate(role, port_role, request, step)
+            self.receipt_ledger.validate_receipt(role, port_role, request, step)
+            result = self.validate_output(role, request, step.result)
             if self.result_validator is not None:
                 self.result_validator(role, result)
         except Exception as error:
             self.audit.append(role.lower(), "failed", agent_role=port_role, input_value=request, output_value=None,
                               detail={"error_type": type(error).__name__, "message": str(error)})
             raise
+        if result != step.result:
+            audit_detail = {**(audit_detail or {}), "received_output_hash": step.receipt.output_hash}
         self.audit.append(role.lower(), "complete", agent_role=port_role, input_value=request, output_value=result,
                           detail=audit_detail)
         return dict(result)
 
     def _validate_repairable_result(self, role, request, result):
-        self.validate_output(role, request, result)
+        result = self.validate_output(role, request, result)
         if self.result_validator is not None:
             self.result_validator(role, result)
 
@@ -362,6 +375,10 @@ class AgentStepRunner:
                 self._validate_repairable_result(role, request, step.result)
             except ValueError as error:
                 category = type(error)
+                if category is _UnknownEvidenceReference and self.catalog_provider is not None:
+                    # There is no same-product source to bind. A model cannot
+                    # repair the absent authority by rewriting the proposal.
+                    break
                 if category in repaired_categories:
                     break
                 if repaired_categories and category not in {_UnknownEvidenceReference, _InvalidProductTerms, FinancialFactReferenceError, _MissingComparisonCandidate}:
@@ -423,7 +440,7 @@ class AgentStepRunner:
                 )
             if isinstance(error, _MissingComparisonCandidate):
                 request['validation_feedback']['instruction'] = (
-                    '补齐comparison_subjects中遗漏产品的完整提案，保留已返回产品及其条款，使用本次产品资料。'
+                    '仅为comparison_subjects中的产品返回完整提案。补齐遗漏项，删除范围之外的候选，保留范围内已有条款。'
                     '依据proposal_term_context中的登记字段、数量上界与用户授权形成拟议条款，明确其为研究假设。'
                     '不得放宽预算、编造价格或计算数值；确实缺少条件时在missing_inputs列明，不能伪称已满足预算。')
             if isinstance(error, FinancialFactReferenceError):
@@ -624,6 +641,31 @@ def _without_proposal_reference_ids(result):
     return projected
 
 
+def _project_catalog_proposals(result, catalog):
+    """Keep registered proposal fields and resolve their catalogue citations.
+
+    The receipt covers the original model response. Only declared proposal
+    fields enter the Host, and calculation/decision fields retain strict validation.
+    """
+    if not isinstance(result, Mapping) or not isinstance(result.get("proposals"), list):
+        return result
+    sources = {}
+    for item in catalog or ():
+        if isinstance(item, Mapping) and isinstance(item.get("evidence_id"), str) and item.get("product_id"):
+            sources.setdefault(item["product_id"], []).append(item["evidence_id"])
+    rows = []
+    for proposal in result["proposals"]:
+        if isinstance(proposal, Mapping) and isinstance(proposal.get("product_id"), str):
+            proposal = {key: value for key, value in proposal.items() if key in PROPOSAL_FIELDS}
+            ids = sources.get(proposal["product_id"])
+            refs = proposal.get("evidence_ref_ids")
+            if ids and isinstance(refs, list) and all(isinstance(ref, str) for ref in refs):
+                if not refs or any(ref not in ids for ref in refs):
+                    proposal = {**proposal, "evidence_ref_ids": list(dict.fromkeys(ids))}
+        rows.append(proposal)
+    return {**result, "proposals": rows}
+
+
 def _validate_request_result(role: str, request: Mapping[str, Any], value: object, *, catalog_evidence=None) -> None:
     domain_input = request.get("input", {})
     if role == "Structurer" and domain_input.get("phase") == "finalize":
@@ -645,7 +687,7 @@ def _validate_request_result(role: str, request: Mapping[str, Any], value: objec
             unknown = [ref for ref in row.get("evidence_ref_ids", ()) if ref not in known or not any(
                 item.get("evidence_id") == ref and item.get("product_id") == row.get("product_id")
                 for item in evidence if isinstance(item, Mapping))]
-            if unknown:
+            if unknown or (catalog_evidence is not None and not row.get("evidence_ref_ids")):
                 available = [item.get("evidence_id") for item in evidence
                              if isinstance(item, Mapping) and item.get("product_id") == row.get("product_id")]
                 raise _UnknownEvidenceReference(
@@ -707,11 +749,7 @@ def _validate_role_result(role: str, value: object) -> None:
         for proposal in proposals:
             if not isinstance(proposal, Mapping):
                 raise ValueError("Selector.proposals必须为对象数组")
-            _closed_fields(
-                proposal,
-                {"product_id", "product_name", "underlyings", "reason", "suitable_for", "not_suitable_for", "main_risks", "library_status", "evidence_ref_ids", "missing_inputs", "term_overrides"},
-                "Selector.proposal",
-            )
+            _closed_fields(proposal, PROPOSAL_FIELDS, "Selector.proposal")
             _nonempty_text(proposal.get("product_id"), "Selector.proposal.product_id")
             if "term_overrides" in proposal:
                 terms = proposal["term_overrides"]
