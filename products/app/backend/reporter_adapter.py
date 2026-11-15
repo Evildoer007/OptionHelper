@@ -19,6 +19,7 @@ for _source in (_ROOT / "core" / "src", _ROOT / "modules" / "reporter" / "src", 
         sys.path.insert(0, str(_source))
 
 from modules.designer.service import call_tool as designer_call_tool
+from modules.designer.renderer import SURFACE_PAINT_STYLE
 from modules.reporter.artifact_validator import validate_report_run_directory
 from modules.reporter.export_service import rerender_frozen_delivery
 from modules.reporter.models import ReporterError
@@ -46,12 +47,17 @@ def standalone_report_html(content: bytes, artifact_name: str,
     # Sanitized working documents intentionally drop input meta tags. Restore
     # only a trusted encoding declaration before any title/text so offline
     # browsers do not guess GBK for UTF-8 Chinese reports.
+    insert = ""
     if not re.search(r'<meta\b[^>]*charset\s*=', html, re.IGNORECASE):
+        insert = '<meta charset="utf-8">'
+    if 'class="chart-figure"' in html and 'id="optionhelper-surface-paint"' not in html:
+        # Older frozen documents can embed their own Plotly runtime. Constrain
+        # those canvas layers too, while leaving the stored delivery intact.
+        insert += SURFACE_PAINT_STYLE
+    if insert:
         head = re.search(r'<head\b[^>]*>', html, re.IGNORECASE)
-        if head:
-            html = html[:head.end()] + '<meta charset="utf-8">' + html[head.end():]
-        else:
-            html = '<meta charset="utf-8">' + html
+        offset = head.end() if head else 0
+        html = html[:offset] + insert + html[offset:]
     script = re.compile(r'<script\b(?P<attrs>[^>]*)>\s*</script\s*>', re.IGNORECASE)
     source = re.compile(r'\bsrc\s*=\s*([\'"])(.*?)\1', re.IGNORECASE)
 
