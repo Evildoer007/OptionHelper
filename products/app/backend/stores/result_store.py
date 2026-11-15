@@ -11,7 +11,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -267,7 +267,7 @@ class ResultStore:
         pending = tuple(requests)
         if not pending:
             return
-        records = self._state.read("results")
+        records = self._state.read_without_fields("results", ("result", "research"))
         for identity, reference in pending:
             ref = self._owned_module_run_ref(identity, reference, records)
             try:
@@ -863,10 +863,34 @@ class ResultStore:
     def read_report_document_artifact(self, identity: SessionIdentity, report_run_id: str,
                                       artifact_name: str) -> tuple[bytes, str]:
         document = self.get_report_document(identity, report_run_id)
+        return self._report_artifact_from_record(document, artifact_name, editable=True)
+
+    def report_delivery(self, identity: SessionIdentity, report_run_id: str, *,
+                        editable: bool = False) -> tuple[str, Callable[[str], tuple[bytes, str]]]:
+        """Bind all reads for one delivery to the same authorized snapshot."""
+        if editable:
+            record = self.get_report_document(identity, report_run_id)
+            if record is None:
+                raise KeyError(report_run_id)
+            title = record["title"]
+        else:
+            record = self._owned_report_record(identity, report_run_id)
+            title = ""
+
+        def read_asset(name: str) -> tuple[bytes, str]:
+            return self._report_artifact_from_record(record, name, editable=editable)
+
+        return title, read_asset
+
+    @staticmethod
+    def _report_artifact_from_record(record: Mapping[str, Any] | None, artifact_name: str, *,
+                                     editable: bool = False) -> tuple[bytes, str]:
+        """Read an artifact from an already authorized, request-local snapshot."""
         artifact_name = _report_artifact_name(artifact_name)
-        for item in (document or {}).get("artifacts", []):
+        for item in (record or {}).get("artifacts", []):
             if item["name"] == artifact_name:
-                return base64.b64decode(item["content"], validate=True), item["content_type"]
+                content = base64.b64decode(item["content"], validate=True) if editable else _decode_report_artifact(item)
+                return content, item["content_type"]
         raise KeyError(artifact_name)
 
     def resolve_report_run(self, identity: SessionIdentity, reference: dict[str, str]) -> dict[str, Any]:
@@ -904,12 +928,7 @@ class ResultStore:
         return record
 
     def read_report_artifact(self, identity: SessionIdentity, report_run_id: str, artifact_name: str) -> tuple[bytes, str]:
-        record = self._owned_report_record(identity, report_run_id)
-        artifact_name = _report_artifact_name(artifact_name)
-        for artifact in record["artifacts"]:
-            if artifact["name"] == artifact_name:
-                return _decode_report_artifact(artifact), artifact["content_type"]
-        raise KeyError(artifact_name)
+        return self._report_artifact_from_record(self._owned_report_record(identity, report_run_id), artifact_name)
 
     def _require_task_owner(self, identity: SessionIdentity, task_id: str) -> None:
         records = self._state.read("tasks")
