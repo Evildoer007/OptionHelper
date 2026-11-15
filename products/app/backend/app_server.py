@@ -1780,14 +1780,13 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             from urllib.parse import quote
             identity = self._identity()
             report_id, name = path.removeprefix("/api/reports/").split("/document-artifacts/", 1)
-            content, content_type = self.app.results.read_report_document_artifact(identity, report_id, name)
-            document = self.app.results.get_report_document(identity, report_id)
-            title = re.sub(r'[\\/:*?"<>|]', "_", document["title"])
+            title, read_artifact = self.app.results.report_delivery(identity, report_id, editable=True)
+            content, content_type = read_artifact(name)
+            title = re.sub(r'[\\/:*?"<>|]', "_", title)
             filename = quote(title + Path(name).suffix, safe="")
             download = parse_qs(parsed.query).get("download", [""])[0] == "1"
             if content_type.split(";", 1)[0] == "text/html":
-                content = standalone_report_html(content, name,
-                    lambda asset: self.app.results.read_report_document_artifact(identity, report_id, asset))
+                content = standalone_report_html(content, name, read_artifact)
             self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
                 "Content-Disposition": f"{'attachment' if download else 'inline'}; filename=report{Path(name).suffix}; filename*=UTF-8''{filename}",
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; frame-ancestors 'self'",
@@ -1797,11 +1796,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/reports/") and "/artifacts/" in path:
             identity = self._identity()
             report_run_id, artifact_name = path.removeprefix("/api/reports/").split("/artifacts/", 1)
-            content, content_type = self.app.results.read_report_artifact(identity, report_run_id, artifact_name)
+            _, read_artifact = self.app.results.report_delivery(identity, report_run_id)
+            content, content_type = read_artifact(artifact_name)
             download = parse_qs(parsed.query).get("download", [""])[0] == "1"
             if content_type.split(";", 1)[0] == "text/html":
-                content = standalone_report_html(content, artifact_name,
-                    lambda asset: self.app.results.read_report_artifact(identity, report_run_id, asset))
+                content = standalone_report_html(content, artifact_name, read_artifact)
             self._bytes(HTTPStatus.OK, content, content_type, extra_headers={
                 "Content-Disposition": f'{"attachment" if download else "inline"}; filename="{Path(artifact_name).name}"',
                 "Content-Security-Policy": "sandbox allow-scripts; default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'none'; form-action 'none'; frame-ancestors 'self'",
