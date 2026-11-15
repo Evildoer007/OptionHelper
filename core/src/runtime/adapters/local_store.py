@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from hashlib import sha256
+from hashlib import file_digest, sha256
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -91,10 +92,11 @@ def _write_value(path: Path, value: bytes | str | Mapping[str, Any]) -> bytes:
     return payload
 
 
-def _read_regular_bytes(path: Path, label: str) -> bytes:
-    """Read a leaf file once without following a replacement symlink."""
+@contextmanager
+def _open_regular_file(path: Path, label: str):
+    """Open a leaf file without following a replacement symlink."""
 
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError as error:
@@ -106,10 +108,15 @@ def _read_regular_bytes(path: Path, label: str) -> bytes:
             descriptor = -1
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 raise StoreIntegrityError(f"{label}必须是普通文件")
-            return stream.read()
+            yield stream
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_regular_bytes(path: Path, label: str) -> bytes:
+    with _open_regular_file(path, label) as stream:
+        return stream.read()
 
 
 def _json_mapping(value: bytes | str | Mapping[str, Any], label: str) -> Mapping[str, Any]:
@@ -442,6 +449,11 @@ class LocalResultStore:
         file_hashes = manifest.get("file_hashes")
         if not isinstance(file_hashes, Mapping):
             raise StoreIntegrityError("ModuleRun产物清单无效")
+        result_name = manifest.get("result_file")
+        if result_name not in {"result.json", "error.json"}:
+            raise StoreIntegrityError("ModuleRun结果文件引用无效")
+        if file_hashes.get(result_name) != ref.expected_result_file_hash:
+            raise StoreIntegrityError("ModuleRun结果文件哈希与正式结果不一致")
         actual_files: set[str] = set()
         for path in run_dir.rglob("*"):
             if path.is_symlink():
@@ -451,15 +463,12 @@ class LocalResultStore:
         if actual_files != set(file_hashes) | {"artifacts/artifact_manifest.json", "commit_marker.json"}:
             raise StoreIntegrityError("ModuleRun文件集合与不可变提交不一致")
         for name, expected in file_hashes.items():
-            path = _inside(run_dir, run_dir / _safe_relative(name))
-            if not path.is_file() or path.is_symlink() or sha256(_read_regular_bytes(path, f"ModuleRun文件：{name}")).hexdigest() != expected:
-                raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{name}")
-        result_name = manifest.get("result_file")
-        if result_name not in {"result.json", "error.json"}:
-            raise StoreIntegrityError("ModuleRun结果文件引用无效")
-        result_bytes = _read_regular_bytes(run_dir / result_name, "ModuleRun结果文件")
-        if sha256(result_bytes).hexdigest() != ref.expected_result_file_hash:
-            raise StoreIntegrityError("ModuleRun结果文件哈希与正式结果不一致")
+            path = run_dir / _safe_relative(name)
+            if path.resolve() != path:
+                raise StoreIntegrityError("ModuleRun不得包含符号链接")
+            with _open_regular_file(path, f"ModuleRun文件：{name}") as stream:
+                if file_digest(stream, "sha256").hexdigest() != expected:
+                    raise StoreIntegrityError(f"ModuleRun文件哈希不一致：{name}")
         return run_dir
 
     def verify_module_run(self, ref: ModuleRunRef, *, tenant_id: str) -> None:
