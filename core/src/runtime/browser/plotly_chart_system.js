@@ -184,7 +184,8 @@
       ...(values ? { tickmode: 'array', tickvals: values, ticktext: values.map(formatter) } : {}),
     });
     const xTicks = surfaceAxisTicks(x, narrow ? 3 : 5), yTicks = surfaceAxisTicks(y, narrow ? 3 : 5);
-    const customdata = y.map((yv, j) => x.map((xv, i) => [formatX(xv), formatY(yv), finite(z[j]?.[i]) ? formatZ(z[j][i]) : '不适用']));
+    const xLabels = x.map(formatX), yLabels = y.map(formatY);
+    const customdata = yLabels.map((yLabel, j) => xLabels.map((xLabel, i) => [xLabel, yLabel, finite(z[j]?.[i]) ? formatZ(z[j][i]) : '不适用']));
     const hovertemplate = `${escape(xTitle)}：%{customdata[0]}<br>${escape(yTitle)}：%{customdata[1]}<br>${escape(zTitle)}：%{customdata[2]}<extra></extra>`;
     const trace = {
       type: heatmap ? 'heatmap' : 'surface', x, y, z, customdata, hovertemplate,
