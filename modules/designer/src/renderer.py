@@ -52,6 +52,11 @@ PARAMETER_SOURCE_LABELS = {
     "schedule_derived": "合约日程推导",
 }
 ASSET_MODES = {"shared", "portable"}
+SURFACE_PAINT_STYLE = (
+    '<style id="optionhelper-surface-paint">'
+    '.chart-figure .oh-surface-plot{contain:layout paint;isolation:isolate;overflow:hidden;clip-path:inset(0)}'
+    '</style>'
+)
 _NUMBER_TEXT = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
 _MATH_SUBSCRIPT_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_])(?:[A-Za-zΠπ]|Pi)_[A-Za-z0-9]+(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])(?:K[12]|S0)(?![A-Za-z0-9_])"
@@ -1492,6 +1497,20 @@ def validate_generated_javascript(source: str) -> None:
 
 
 
+def surface_runtime_markup(config: DesignerConfig) -> str:
+    """Keep the offline Plotly bundle inert until a surface needs to draw."""
+    def script(path: Path) -> str:
+        source = path.read_text(encoding="utf-8").replace("</script", "<\\/script")
+        return f"<script>{source}</script>"
+
+    plotly, chart_system, surface = config.surface_runtime_paths
+    return (
+        SURFACE_PAINT_STYLE
+        + '<template id="plotly-runtime">' + script(plotly) + '</template>'
+        + script(chart_system) + script(surface)
+    )
+
+
 def render_html(
     payload: dict[str, Any],
     input_dir: Path | None = None,
@@ -1618,10 +1637,7 @@ def render_html(
         presentation_source = config.chart_presentation_path.read_text(encoding="utf-8")
         echarts_head += "<script>" + presentation_source.replace("</script", "<\\/script") + "</script>"
     if any(chart.get("type") == "surface" for chart in charts):
-        # Both report modes use the workbench's locked offline Plotly runtime.
-        for path in config.surface_runtime_paths:
-            source = path.read_text(encoding="utf-8")
-            echarts_head += "<script>window.addEventListener('DOMContentLoaded',function(){" + source.replace("</script", "<\\/script") + "});</script>"
+        echarts_head += surface_runtime_markup(config)
     chart_script = "" if not charts else r"""<script>
 	const chartSpecs=__CHARTS__;
 	const chartInstances=[];
