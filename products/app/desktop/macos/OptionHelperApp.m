@@ -167,7 +167,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 @property(nonatomic, strong) NSButton *taskSearch;
 @property(nonatomic, strong) NSButton *reportToggle;
 @property(nonatomic) BOOL loadedURL;
-@property(nonatomic, strong) NSMutableString *startupOutput;
+@property(nonatomic, strong) NSMutableData *startupOutput;
 @property(nonatomic, copy) NSString *themePreference;
 @property(nonatomic, strong) NSVisualEffectView *sidebarMaterialView;
 @property(nonatomic) NSInteger activeOperationCount;
@@ -177,6 +177,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 @property(nonatomic, strong) NSURL *uiPreferencesURL;
 @property(nonatomic, strong) NSMenuItem *zoomInMenuItem;
 @property(nonatomic, strong) NSMenuItem *zoomOutMenuItem;
+- (WKWebView *)prepareWebView;
 @end
 
 @implementation OptionHelperAppDelegate
@@ -184,7 +185,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
     [self installMainMenu];
-    self.startupOutput = [NSMutableString string];
+    self.startupOutput = [NSMutableData data];
     self.themePreference = @"light";
     self.uiScale = 1.0;
     [NSApp addObserver:self
@@ -282,7 +283,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     __weak typeof(self) weakSelf = self;
     self.backend.terminationHandler = ^(NSTask *task) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (!weakSelf.loadedURL && task.terminationStatus != 0) {
+            if (weakSelf != nil && !weakSelf.loadedURL) {
                 [weakSelf showFailure:@"应用服务未能启动"];
             }
         });
@@ -290,6 +291,8 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     NSError *launchError = nil;
     if (![self.backend launchAndReturnError:&launchError]) {
         [self showFailure:@"无法启动内置应用服务"];
+    } else {
+        [[self prepareWebView] loadHTMLString:@"" baseURL:nil];
     }
 }
 
@@ -298,36 +301,38 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     if (data.length == 0) {
         return;
     }
-    NSString *text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (text != nil) {
-        [self.startupOutput appendString:text];
+    if (!self.loadedURL) {
+        [self.startupOutput appendData:data];
         [self consumeBackendOutput];
     }
-    if (!self.loadedURL) {
-        [self.startupPipe.fileHandleForReading readInBackgroundAndNotify];
-    }
+    [self.startupPipe.fileHandleForReading readInBackgroundAndNotify];
 }
 
 - (void)consumeBackendOutput {
-    NSRange marker = [self.startupOutput rangeOfString:@"OPTIONHELPER_URL="];
-    if (marker.location == NSNotFound) {
+    if (self.loadedURL) return;
+    NSData *lineEnd = [@"\n" dataUsingEncoding:NSUTF8StringEncoding];
+    NSString *marker = @"OPTIONHELPER_URL=";
+    while (self.startupOutput.length > 0) {
+        NSRange newline = [self.startupOutput rangeOfData:lineEnd options:0
+                                                  range:NSMakeRange(0, self.startupOutput.length)];
+        if (newline.location == NSNotFound) return;
+        NSData *bytes = [self.startupOutput subdataWithRange:NSMakeRange(0, newline.location)];
+        [self.startupOutput replaceBytesInRange:NSMakeRange(0, NSMaxRange(newline)) withBytes:NULL length:0];
+        NSString *line = [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+        if (![line hasPrefix:marker]) continue;
+        NSString *address = [[line substringFromIndex:marker.length]
+            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSURL *url = [NSURL URLWithString:address];
+        if (url == nil || ![url.scheme isEqualToString:@"http"] || ![url.host isEqualToString:@"127.0.0.1"] ||
+            url.port == nil || url.user != nil || url.password != nil) {
+            [self showFailure:@"应用服务返回了无效地址"];
+            return;
+        }
+        self.loadedURL = YES;
+        [self.startupOutput setLength:0];
+        [self showWebView:url];
         return;
     }
-    NSUInteger start = marker.location + marker.length;
-    NSRange newline = [self.startupOutput rangeOfCharacterFromSet:[NSCharacterSet newlineCharacterSet]
-                                                          options:0
-                                                            range:NSMakeRange(start, self.startupOutput.length - start)];
-    if (newline.location == NSNotFound) {
-        return;
-    }
-    NSString *address = [self.startupOutput substringWithRange:NSMakeRange(start, newline.location - start)];
-    NSURL *url = [NSURL URLWithString:address];
-    if (url == nil || ![url.host isEqualToString:@"127.0.0.1"]) {
-        [self showFailure:@"应用服务返回了无效地址"];
-        return;
-    }
-    self.loadedURL = YES;
-    [self showWebView:url];
 }
 
 - (void)showWebView:(NSURL *)url {
@@ -356,6 +361,17 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     originComponents.host = url.host;
     originComponents.port = url.port;
     self.appOrigin = originComponents.URL;
+    WKWebView *webView = [self prepareWebView];
+    webView.navigationDelegate = self;
+    webView.UIDelegate = self;
+    self.lastSafeURL = startupURL;
+    [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (WKWebView *)prepareWebView {
+    if (self.webView != nil) return self.webView;
     WKWebViewConfiguration *configuration = [[WKWebViewConfiguration alloc] init];
     // Show the splash before the login page's module graph is evaluated.  The
     // login module owns the timer and always removes this class again.
@@ -363,7 +379,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     WKUserScript *startupScript = [[WKUserScript alloc] initWithSource:startupSource
                                                          injectionTime:WKUserScriptInjectionTimeAtDocumentStart
                                                       forMainFrameOnly:YES];
-    WKUserScript *runtimeStatusScript = [[WKUserScript alloc] initWithSource:@"(()=>{const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});let inFlight=false;const refresh=()=>{if(inFlight)return;inFlight=true;return fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering')).finally(()=>{inFlight=false;});};addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();"
+    WKUserScript *runtimeStatusScript = [[WKUserScript alloc] initWithSource:@"(()=>{if(location.protocol!=='http:'||location.hostname!=='127.0.0.1')return;const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});let inFlight=false;const refresh=()=>{if(inFlight)return;inFlight=true;return fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering')).finally(()=>{inFlight=false;});};addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();"
                                                               injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
                                                            forMainFrameOnly:YES];
     [configuration.userContentController addUserScript:startupScript];
@@ -375,8 +391,6 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     WKWebView *webView = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:configuration];
     webView.allowsMagnification = NO;
     webView.pageZoom = self.uiScale;
-    webView.navigationDelegate = self;
-    webView.UIDelegate = self;
     webView.underPageBackgroundColor = NSColor.clearColor;
     // underPageBackgroundColor only controls the overscroll area. WebKit's
     // page backing must also be transparent for the native sidebar to show.
@@ -430,17 +444,14 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     self.window.contentView = contentView;
     [self.window makeFirstResponder:webView];
     [self.window center];
-    [self.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
     self.webView = webView;
-    self.lastSafeURL = startupURL;
     self.activeOperationState = @"recovering";
     [self ensureTitlebarControlsForWindow:self.window];
     dispatch_async(dispatch_get_main_queue(), ^{
         [self ensureTitlebarControlsForWindow:self.window];
         [self syncWorkspaceTitlebarControlsForURL:self.webView.URL];
     });
-    [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
+    return webView;
 }
 
 - (void)ensureTitlebarControlsForWindow:(NSWindow *)window {
