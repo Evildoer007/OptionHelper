@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from collections.abc import Callable
+from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 from threading import RLock
@@ -39,6 +41,7 @@ class _LocalDocumentStore:
         "sessions", "tasks", "settings", "audit", "data_assets",
         "results", "result_recovery", "reports", "report_documents", "product_rule_revisions",
     }
+    _LARGE_DOCUMENT = 32 * 1024 * 1024
 
     def __init__(self, root: Path) -> None:
         self._root = root.expanduser().resolve()
@@ -141,8 +144,6 @@ class _LocalDocumentStore:
                 cached = self._record_cache
             if cached is None or cached[0] != name or cached[1] != signature:
                 records = self.read(name)
-                # A large collection remains readable without retaining an
-                # unbounded index in memory. Typical histories fit this bound.
                 if stat.st_size <= 256 * 1024 * 1024:
                     with self._cache_lock:
                         self._record_cache = (name, signature, records)
@@ -151,6 +152,44 @@ class _LocalDocumentStore:
             else:
                 records = cached[2]
             return deepcopy(records.get(key))
+
+    def read_without_fields(self, name: str, fields: tuple[str, ...]) -> dict[str, Any]:
+        """Read index metadata without materializing large embedded payloads."""
+        self._validate_name(name)
+        with self._locks[name]:
+            path = self._path(name)
+            try:
+                large = path.stat().st_size >= self._LARGE_DOCUMENT
+            except FileNotFoundError:
+                return {}
+            if large:
+                records = self._read_large_metadata(path, fields)
+                if records is not None:
+                    return records
+            return self.read(name)
+
+    @staticmethod
+    def _read_large_metadata(path: Path, omit: tuple[str, ...]) -> dict[str, Any] | None:
+        if sqlite3.sqlite_version_info < (3, 51) or not omit:
+            return None
+        raw = path.read_text(encoding="utf-8")
+        if not raw.lstrip().startswith("{"):
+            return None
+        paths = tuple(f"$.{field}" for field in omit)
+        arguments = ", ".join("?" for _ in paths)
+        try:
+            with closing(sqlite3.connect(":memory:")) as connection:
+                # Keep the atomic JSON file authoritative. Use the binary JSON
+                # cursor to avoid decoding the payloads in every historical run.
+                if not connection.execute("SELECT json_valid(?)", (raw,)).fetchone()[0]:
+                    return None
+                rows = connection.execute(
+                    f"SELECT key, json_remove(value, {arguments}) FROM jsonb_each(jsonb(?)) WHERE type = 'object'",
+                    (*paths, raw),
+                )
+                return {record_key: json.loads(value) for record_key, value in rows}
+        except (sqlite3.Error, json.JSONDecodeError):
+            return None
 
     def _invalidate_record_cache(self, name: str) -> None:
         with self._cache_lock:
