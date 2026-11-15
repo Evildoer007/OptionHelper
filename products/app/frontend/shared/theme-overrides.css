@@ -1060,13 +1060,13 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
 .workspace-settings-dialog__loading p { margin: 0; }
 .workspace-settings-dialog__close {
   position: absolute; top: 20px; right: 14px;
-  display: grid; width: 28px; height: 28px; place-items: center;
+  display: grid; box-sizing: border-box; width: 28px; height: 28px; place-items: center;
   padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--color-ink);
   cursor: default;
 }
 .workspace-settings-dialog__close:hover,
 .workspace-settings-dialog__close:focus-visible { background: var(--color-ground); }
-.workspace-settings-dialog__close svg { width: 14px; height: 14px; }
+.workspace-settings-dialog__close svg { display: block; width: 14px; height: 14px; }
 @media (max-width: 700px) {
   .workspace-settings-dialog { width: calc(100vw - 20px); height: calc(100dvh - 24px); border-radius: 18px; }
 }
