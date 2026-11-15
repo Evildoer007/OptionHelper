@@ -2,6 +2,7 @@
 (() => {
   'use strict';
   const mounted = new WeakMap();
+  const numberFormats = new Map();
   const finite = value => typeof value === 'number' && Number.isFinite(value);
   const escape = value => String(value ?? '').replace(/[&<>"']/g, character =>
     ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[character]));
@@ -10,7 +11,11 @@
     if (!finite(value)) return '不适用';
     const number = (Object.is(value, -0) ? 0 : value) * (percent ? 100 : 1);
     const digits = number === 0 || Math.abs(number) >= 1 ? 2 : Math.min(10, Math.ceil(-Math.log10(Math.abs(number))) + 2);
-    return number.toLocaleString('zh-CN', {maximumFractionDigits: Math.max(digits, axisDigits), useGrouping: false}) + (percent ? '%' : '');
+    const precision = Math.max(digits, axisDigits);
+    if (!numberFormats.has(precision)) {
+      numberFormats.set(precision, new Intl.NumberFormat('zh-CN', {maximumFractionDigits: precision, useGrouping: false}));
+    }
+    return numberFormats.get(precision).format(number) + (percent ? '%' : '');
   }
 
   function grid(spec) {
@@ -40,7 +45,10 @@
   }
 
   function figure(spec, options = {}) {
-    const values = grid(spec);
+    return figureFromGrid(spec, grid(spec), options);
+  }
+
+  function figureFromGrid(spec, values, options) {
     let current = null;
     if (finite(spec.reference_x) && values.x.length && values.y.length) {
       const i = values.x.reduce((best, value, index) => Math.abs(value - spec.reference_x) < Math.abs(values.x[best] - spec.reference_x) ? index : best, 0);
@@ -107,7 +115,7 @@
         .oh-surface-content{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-rows:minmax(0,1fr);min-width:0;min-height:0}
         .oh-surface-content[data-compact=true]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
         .oh-surface-content[data-table=true]{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}
-        .oh-surface-plot{position:relative;overflow:hidden;min-width:0;min-height:0}
+        .oh-surface-plot{position:relative;overflow:hidden;contain:layout paint;isolation:isolate;min-width:0;min-height:0}
         .oh-surface-plot .main-svg{position:absolute;inset:0;pointer-events:none}
         .oh-surface-plot .main-svg .draglayer{pointer-events:all}
         .oh-surface-plot .gl-container{position:absolute;inset:0}
@@ -134,7 +142,6 @@
     const plot = doc.createElement('div'); plot.className = 'oh-surface-plot';
     const table = doc.createElement('div'); table.className = 'oh-surface-table'; table.hidden = true;
     const values = grid(spec), formats = formatters(spec);
-    table.innerHTML = `<table aria-label="${escape(spec.title || '曲面')}数据表"><thead><tr><th>${escape(spec.y_axis_name)}／${escape(spec.x_axis_name)}</th>${values.x.map(v => `<th scope="col">${escape(formats.formatX(v))}</th>`).join('')}</tr></thead><tbody>${values.y.map((v, j) => `<tr><th scope="row">${escape(formats.formatY(v))}</th>${values.x.map((_, i) => `<td>${escape(formats.formatZ(values.z[j][i]))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     const domain = charts.surfaceDomain(values.z);
     const legend = domain && surfaceLegend(doc, domain, charts.valueColorscale(domain.min, domain.max, charts.colors(doc)), formats.formatZ);
     content.append(plot);
@@ -156,6 +163,9 @@
       if (view === '3d') window.Plotly?.relayout(plot, {'scene.camera': camera});
     });
     function sync(compact) {
+      if (view === 'table' && !table.firstChild) {
+        table.innerHTML = `<table aria-label="${escape(spec.title || '曲面')}数据表"><thead><tr><th>${escape(spec.y_axis_name)}／${escape(spec.x_axis_name)}</th>${values.x.map(v => `<th scope="col">${escape(formats.formatX(v))}</th>`).join('')}</tr></thead><tbody>${values.y.map((v, j) => `<tr><th scope="row">${escape(formats.formatY(v))}</th>${values.z[j].map(value => `<td>${escape(formats.formatZ(value))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+      }
       host.dataset.surfaceView = view;
       for (const [key, button] of buttons) button.setAttribute('aria-pressed', String(key === view));
       reset.disabled = view !== '3d';
@@ -188,13 +198,13 @@
       if (layoutKey === requested) return pending;
       requested = layoutKey;
       const activeRevision = ++revision;
+      const kind = view;
       pending = pending.catch(() => {}).then(async () => {
         if (disposed || activeRevision !== revision) return;
         if (view !== drawn?.view || !width || !height) discardPlot();
         if (view === 'table' || !width || !height) return;
-        const kind = view;
         const draw = () => {
-          const picture = figure(spec, {heatmap: view === 'heatmap', width: host.clientWidth,
+          const picture = figureFromGrid(spec, values, {heatmap: kind === 'heatmap', width: host.clientWidth,
             document: doc, camera: camera || charts.surfaceCamera(),
             showColorbar: false});
           return charts.render(plot, picture.traces, {...picture.layout, autosize: false, width, height});
@@ -244,29 +254,38 @@
     }
     toolbar.append(reset);
     const resize = () => { if (!disposed) return render(); };
+    let resizeFrame = 0;
+    const scheduleResize = () => {
+      if (resizeFrame || disposed) return;
+      resizeFrame = rootWindow.requestAnimationFrame(() => {
+        resizeFrame = 0;
+        resize();
+      });
+    };
     const Resize = doc.defaultView?.ResizeObserver;
-    const observer = Resize ? new Resize(resize) : null;
+    const observer = Resize ? new Resize(scheduleResize) : null;
     observer?.observe(host);
     observer?.observe(plot);
     const ObserveVisibility = doc.defaultView?.IntersectionObserver;
     const visibility = ObserveVisibility ? new ObserveVisibility(([entry]) => {
       onScreen = entry.isIntersecting;
-      render();
+      scheduleResize();
     }) : null;
     if (visibility) visibility.observe(host);
     else onScreen = true;
     outerDoc.addEventListener('visibilitychange', resize);
     outerDoc.addEventListener('optionhelper:modulevisibility', resize);
-    if (frame) outerDoc.addEventListener('scroll', resize, true);
+    if (frame) outerDoc.addEventListener('scroll', scheduleResize, true);
     const controller = {ready: render(), resize, camera: () => plot._fullLayout?.scene?.camera || camera, dispose() {
       if (disposed) return;
       disposed = true;
       revision++;
+      if (resizeFrame) rootWindow.cancelAnimationFrame(resizeFrame);
       observer?.disconnect();
       visibility?.disconnect();
       outerDoc.removeEventListener('visibilitychange', resize);
       outerDoc.removeEventListener('optionhelper:modulevisibility', resize);
-      if (frame) outerDoc.removeEventListener('scroll', resize, true);
+      if (frame) outerDoc.removeEventListener('scroll', scheduleResize, true);
       discardPlot();
       if (mounted.get(host) === controller) mounted.delete(host);
     }};
