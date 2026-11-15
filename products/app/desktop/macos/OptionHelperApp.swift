@@ -131,6 +131,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private let uiScaleSteps: [CGFloat] = [0.8, 0.9, 1.0, 1.1, 1.25, 1.4]
     private var backend: Process?
     private var startupPipe: Pipe?
+    private var startupOutput = Data()
     private var window: NSWindow?
     private var nativeDialogs: [UUID: OptionHelperNativeDialog] = [:]
     private var nativeDownloads: [ObjectIdentifier: OptionHelperNativeDownload] = [:]
@@ -258,12 +259,15 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         process.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let output = String(data: data, encoding: .utf8) else { return }
-            DispatchQueue.main.async { self?.consumeBackendOutput(output) }
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            DispatchQueue.main.async { self?.consumeBackendOutput(data) }
         }
-        process.terminationHandler = { [weak self] terminated in
+        process.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async {
-                if !(self?.loadedURL ?? false) && terminated.terminationStatus != 0 {
+                if !(self?.loadedURL ?? false) {
                     self?.showFailure("应用服务未能启动")
                 }
             }
@@ -272,19 +276,27 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             try process.run()
             backend = process
             startupPipe = pipe
+            prepareWebView().loadHTMLString("", baseURL: nil)
         } catch {
             showFailure("无法启动内置应用服务")
         }
     }
 
-    private func consumeBackendOutput(_ output: String) {
+    private func consumeBackendOutput(_ output: Data) {
         guard !loadedURL else { return }
-        for line in output.split(whereSeparator: \.isNewline) where line.hasPrefix("OPTIONHELPER_URL=") {
-            let address = String(line.dropFirst("OPTIONHELPER_URL=".count))
-            guard let url = URL(string: address), url.host == "127.0.0.1" else {
+        startupOutput.append(output)
+        let marker = "OPTIONHELPER_URL="
+        while let newline = startupOutput.firstIndex(of: 0x0a) {
+            let line = String(decoding: startupOutput[..<newline], as: UTF8.self)
+            startupOutput.removeSubrange(...newline)
+            guard line.hasPrefix(marker) else { continue }
+            let address = line.dropFirst(marker.count).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: address), url.scheme == "http", url.host == "127.0.0.1",
+                  url.port != nil, url.user == nil, url.password == nil else {
                 showFailure("应用服务返回了无效地址")
                 return
             }
+            startupOutput.removeAll()
             loadedURL = true
             showWebView(url: url)
             return
@@ -312,6 +324,17 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         originComponents.host = url.host
         originComponents.port = url.port
         appOrigin = originComponents.url
+        let view = prepareWebView()
+        view.navigationDelegate = self
+        view.uiDelegate = self
+        lastSafeURL = startupURL
+        view.load(URLRequest(url: startupURL))
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func prepareWebView() -> WKWebView {
+        if let webView { return webView }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
         // Show the splash before the login page's module graph is evaluated.
@@ -325,7 +348,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             forMainFrameOnly: true
         )
         let runtimeStatusScript = WKUserScript(
-            source: "(()=>{const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});let inFlight=false;const refresh=()=>{if(inFlight)return;inFlight=true;return fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering')).finally(()=>{inFlight=false;});};addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();",
+            source: "(()=>{if(location.protocol!=='http:'||location.hostname!=='127.0.0.1')return;const post=(state,count)=>window.webkit?.messageHandlers?.optionhelperRuntime?.postMessage({type:'active_operations',state,...(Number.isFinite(count)?{count}: {})});let inFlight=false;const refresh=()=>{if(inFlight)return;inFlight=true;return fetch('/api/runtime/active-operations').then((response)=>{if(!response.ok)throw new Error('runtime_status_unavailable');return response.json();}).then((value)=>{const count=value?.active_count;if(!Number.isInteger(count)||count<0)throw new Error('runtime_status_invalid');post('ready',count);}).catch(()=>post('recovering')).finally(()=>{inFlight=false;});};addEventListener('pageshow',refresh);setInterval(refresh,1400);refresh();})();",
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true
         )
@@ -338,8 +361,6 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.allowsMagnification = false
         view.pageZoom = uiScale
-        view.navigationDelegate = self
-        view.uiDelegate = self
         view.underPageBackgroundColor = .clear
         // Clearing overscroll alone leaves WebKit's opaque page backing over
         // the native sidebar. Guard the macOS SPI for an opaque-safe fallback.
@@ -393,18 +414,15 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         window.contentView = contentView
         window.delegate = self
         window.makeFirstResponder(view)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
         self.window = window
         self.webView = view
-        lastSafeURL = startupURL
         ensureTitlebarControls(in: window)
         DispatchQueue.main.async { [weak self, weak window] in
             guard let self, let window else { return }
             self.ensureTitlebarControls(in: window)
             self.syncWorkspaceTitlebarControls(for: self.webView?.url)
         }
-        view.load(URLRequest(url: startupURL))
+        return view
     }
 
     private func ensureTitlebarControls(in window: NSWindow) {
