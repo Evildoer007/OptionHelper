@@ -17,7 +17,7 @@ from uuid import uuid4
 from modules.designer.config import load_designer_config
 from modules.designer.design_renderer import DesignerDependencyError, _chart_specs_from_html
 from modules.designer.pdf_renderer import PdfRuntimeError, render_pdf
-from modules.designer.renderer import validate_chart
+from modules.designer.renderer import surface_runtime_markup, validate_chart
 
 from .errors import AuthorizationError, UserActionError, ValidationError
 from .identity.session_identity import SessionIdentity
@@ -684,9 +684,11 @@ def _attach_trusted_charts(
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
-    if any(spec.get("type") == "surface" for spec in chart_specs.values()):
-        sources = load_designer_config().surface_runtime_paths
-        echarts_source += "\n" + "\n".join(path.read_text(encoding="utf-8") for path in sources)
+    surface_runtime = (
+        surface_runtime_markup(load_designer_config())
+        if any(spec.get("type") == "surface" for spec in chart_specs.values())
+        else ""
+    )
     echarts_base64 = base64.b64encode(echarts_source.encode("utf-8")).decode("ascii")
     script = """<script>
 (()=>{
@@ -726,7 +728,8 @@ window.addEventListener("resize",()=>{
         .replace("__CHARTS__", chart_json)
     )
     match = re.search(r"</body\s*>", html, re.IGNORECASE)
-    return html[:match.start()] + script + html[match.start():] if match else html + script
+    charts = surface_runtime + script
+    return html[:match.start()] + charts + html[match.start():] if match else html + charts
 
 
 def _render_docx_bytes(html: str, chart_specs: Mapping[str, Mapping[str, Any]]) -> bytes:
