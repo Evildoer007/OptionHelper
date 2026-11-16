@@ -136,6 +136,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private var nativeDialogs: [UUID: OptionHelperNativeDialog] = [:]
     private var nativeDownloads: [ObjectIdentifier: OptionHelperNativeDownload] = [:]
     private var webView: WKWebView?
+    private var startupIndicator: NSProgressIndicator?
     private var reportPreviewWindow: NSWindow?
     private var reportPreviewWebView: WKWebView?
     private var reportWindowIsEditor = false
@@ -276,10 +277,35 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             try process.run()
             backend = process
             startupPipe = pipe
-            prepareWebView().loadHTMLString("", baseURL: nil)
+            let view = prepareWebView()
+            showStartupWindow(relativeTo: view)
+            view.loadHTMLString("", baseURL: nil)
         } catch {
             showFailure("无法启动内置应用服务")
         }
+    }
+
+    private func showStartupWindow(relativeTo view: WKWebView) {
+        guard let window, let contentView = window.contentView else { return }
+        let indicator = NSProgressIndicator(frame: .zero)
+        indicator.style = .spinning
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.setAccessibilityLabel("正在打开OptionHelper")
+        contentView.addSubview(indicator, positioned: .above, relativeTo: view)
+        NSLayoutConstraint.activate([
+            indicator.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            indicator.centerYAnchor.constraint(equalTo: contentView.centerYAnchor),
+        ])
+        startupIndicator = indicator
+        indicator.startAnimation(nil)
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func finishStartupWindow() {
+        startupIndicator?.stopAnimation(nil)
+        startupIndicator?.removeFromSuperview()
+        startupIndicator = nil
     }
 
     private func consumeBackendOutput(_ output: Data) {
@@ -329,8 +355,6 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
         view.uiDelegate = self
         lastSafeURL = startupURL
         view.load(URLRequest(url: startupURL))
-        window?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func prepareWebView() -> WKWebView {
@@ -643,6 +667,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func showNavigationFailure(_ detail: String) {
+        finishStartupWindow()
         guard webView != nil, appOrigin != nil, let recoveryView = ensureNavigationRecoveryView() else { return }
         navigationFailureVisible = true
         navigationRecoveryDetail?.stringValue = detail
@@ -936,6 +961,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard webView === self.webView else { return }
+        if isSafeAppURL(webView.url) { finishStartupWindow() }
         syncUIScaleToPage()
     }
 
@@ -1798,6 +1824,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     }
 
     private func showFailure(_ text: String) {
+        finishStartupWindow()
         let alert = NSAlert()
         alert.messageText = "OptionHelper无法启动"
         alert.informativeText = text
