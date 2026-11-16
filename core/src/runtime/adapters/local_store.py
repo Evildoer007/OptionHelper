@@ -14,7 +14,6 @@ import tempfile
 from typing import Any, Mapping
 
 from runtime.contracts.contract_types import canonical_json, semantic_hash
-from runtime.contracts.contract_api import ResolvedContract
 from runtime.protocol.models import DataAssetRef, ModuleRunRef
 
 
@@ -137,6 +136,8 @@ def _validate_success_contract(
     result: Mapping[str, Any],
 ) -> None:
     """Reject a successful Run before it can anchor a display-only contract."""
+
+    from runtime.contracts.contract_api import ResolvedContract
 
     try:
         contract = ResolvedContract.from_controlled_snapshot(
