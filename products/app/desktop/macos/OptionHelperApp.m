@@ -146,6 +146,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
+@property(nonatomic, strong) NSProgressIndicator *startupIndicator;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, OptionHelperNativeDialog *> *nativeDialogs;
 @property(nonatomic, strong) NSMapTable<WKDownload *, OptionHelperNativeDownload *> *nativeDownloads;
 @property(nonatomic, strong) NSWindow *reportPreviewWindow;
@@ -292,8 +293,33 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     if (![self.backend launchAndReturnError:&launchError]) {
         [self showFailure:@"无法启动内置应用服务"];
     } else {
-        [[self prepareWebView] loadHTMLString:@"" baseURL:nil];
+        WKWebView *webView = [self prepareWebView];
+        [self showStartupWindow];
+        [webView loadHTMLString:@"" baseURL:nil];
     }
+}
+
+- (void)showStartupWindow {
+    NSView *contentView = self.window.contentView;
+    NSProgressIndicator *indicator = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
+    indicator.style = NSProgressIndicatorStyleSpinning;
+    indicator.translatesAutoresizingMaskIntoConstraints = NO;
+    indicator.accessibilityLabel = @"正在打开OptionHelper";
+    [contentView addSubview:indicator positioned:NSWindowAbove relativeTo:self.webView];
+    [NSLayoutConstraint activateConstraints:@[
+        [indicator.centerXAnchor constraintEqualToAnchor:contentView.centerXAnchor],
+        [indicator.centerYAnchor constraintEqualToAnchor:contentView.centerYAnchor],
+    ]];
+    self.startupIndicator = indicator;
+    [indicator startAnimation:nil];
+    [self.window makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+}
+
+- (void)finishStartupWindow {
+    [self.startupIndicator stopAnimation:nil];
+    [self.startupIndicator removeFromSuperview];
+    self.startupIndicator = nil;
 }
 
 - (void)readBackendOutput:(NSNotification *)note {
@@ -366,8 +392,6 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     webView.UIDelegate = self;
     self.lastSafeURL = startupURL;
     [webView loadRequest:[NSURLRequest requestWithURL:startupURL]];
-    [self.window makeKeyAndOrderFront:nil];
-    [NSApp activateIgnoringOtherApps:YES];
 }
 
 - (WKWebView *)prepareWebView {
@@ -660,6 +684,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 }
 
 - (void)showNavigationFailure:(NSString *)detail {
+    [self finishStartupWindow];
     if (self.webView == nil || self.appOrigin == nil) return;
     NSView *recoveryView = [self ensureNavigationRecoveryView];
     if (recoveryView == nil) return;
@@ -916,6 +941,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
     if (webView != self.webView) return;
+    if ([self isSafeAppURL:webView.URL]) [self finishStartupWindow];
     [self syncUIScaleToPage];
 }
 
@@ -1819,6 +1845,7 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
 }
 
 - (void)showFailure:(NSString *)text {
+    [self finishStartupWindow];
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"OptionHelper无法启动";
     alert.informativeText = text;
