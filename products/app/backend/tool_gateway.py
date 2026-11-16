@@ -33,12 +33,7 @@ from .task_runtime.compute_process import (
     decode_draft_files,
     encode_snapshot,
 )
-from runtime.contracts.contract_api import ResolvedContract
-from runtime.contracts.input_adapter import (
-    ContractResolutionError,
-    compile_compute_data_requirements,
-    first_backtest_entry,
-)
+from runtime.contracts.contract_types import ContractResolutionError
 from runtime.capability_import import load_verified_source_module, verified_capability_modules
 from runtime.protocol.module_host import ModuleHostContextError, require_host_bound_run_contract
 from runtime.protocol.models import CallerContext, DataAssetRef, ModuleRunRef
@@ -1025,6 +1020,8 @@ class ToolGateway:
             underlyings,
             market_history_ref=market_history_ref,
         )
+        from runtime.contracts.input_adapter import compile_compute_data_requirements
+
         counted_calendar = compile_compute_data_requirements("pricer", payload).observation_count is not None
         try:
             if (
@@ -1389,6 +1386,8 @@ class ToolGateway:
         snapshot = prepared.get("resolved_contract")
         if not isinstance(snapshot, Mapping):
             raise ValidationError("正式计算输入缺少ResolvedContract快照")
+        from runtime.contracts.contract_api import ResolvedContract
+
         try:
             contract = ResolvedContract.from_controlled_snapshot(snapshot)
         except ContractResolutionError as error:
@@ -2154,6 +2153,8 @@ def _plan_backtest_window(
             raise ValidationError("Backtester历史行情字节与DataAssetRef不一致")
         pandas = importlib.import_module("pandas")
         backtester = importlib.import_module("modules.backtester")
+        from runtime.contracts.contract_api import ResolvedContract
+
         contract = ResolvedContract(**dict(formal["contract"]))
         history = backtester.HistoricalData.from_frame(
             pandas.read_csv(BytesIO(raw_bytes)),
@@ -2386,6 +2387,8 @@ def _is_run_action(payload: Mapping[str, Any]) -> bool:
 
 
 def _requires_path_calendar(resolved_contract: object, payload: Mapping[str, Any]) -> bool:
+    from runtime.contracts.input_adapter import compile_compute_data_requirements
+
     return compile_compute_data_requirements(
         "pricer", payload, resolved_contract if isinstance(resolved_contract, Mapping) else None,
     ).future_calendar_required
@@ -2473,6 +2476,8 @@ def _backtest_contract_start_date(payload: Mapping[str, Any], coverage: Mapping[
     """
     config = payload.get("backtest_config")
     config = config if isinstance(config, Mapping) else {}
+    from runtime.contracts.input_adapter import first_backtest_entry
+
     candidate = first_backtest_entry(config, coverage)
     if candidate not in {None, ""}:
         try:
@@ -2491,6 +2496,8 @@ def _history_fetch_request(
     resolved_contract: object,
     underlyings: tuple[str, ...],
 ) -> dict[str, Any]:
+    from runtime.contracts.input_adapter import compile_compute_data_requirements
+
     requirements = compile_compute_data_requirements(
         module, payload, resolved_contract if isinstance(resolved_contract, Mapping) else None,
     )
@@ -2664,6 +2671,8 @@ def _counted_backtest_history_scope(request, calendar_reference, compute_payload
         ceilings.append(config["end_date"])
     if not ceilings:
         return request
+    from runtime.contracts.input_adapter import compile_compute_data_requirements
+
     requirements = compile_compute_data_requirements("backtester", compute_payload)
     if requirements.observation_count is None:
         return request
@@ -2797,6 +2806,8 @@ def _calendar_fetch_request(
     except ValueError as error:
         raise ValidationError("valuation_date必须为YYYY-MM-DD") from error
     identity = resolved_contract.get("identity", {}) if isinstance(resolved_contract, Mapping) else payload.get("identity", {})
+    from runtime.contracts.input_adapter import compile_compute_data_requirements
+
     requirements = compile_compute_data_requirements(
         "pricer", payload, resolved_contract if isinstance(resolved_contract, Mapping) else None,
     )
@@ -2842,6 +2853,8 @@ def _calendar_ref_covers_request(
 ) -> bool:
     coverage = reference.get("coverage")
     if payload is not None and "backtest_config" not in payload:
+        from runtime.contracts.input_adapter import compile_compute_data_requirements
+
         requirements = compile_compute_data_requirements("pricer", payload)
         if requirements.observation_count is not None:
             sessions = coverage.get("sessions") if isinstance(coverage, Mapping) else None
