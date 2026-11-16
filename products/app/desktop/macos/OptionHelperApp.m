@@ -146,7 +146,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 @property(nonatomic, strong) NSPipe *startupPipe;
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) WKWebView *webView;
-@property(nonatomic, strong) NSProgressIndicator *startupIndicator;
+@property(nonatomic) BOOL hasPresentedMainWindow;
 @property(nonatomic, strong) NSMutableDictionary<NSUUID *, OptionHelperNativeDialog *> *nativeDialogs;
 @property(nonatomic, strong) NSMapTable<WKDownload *, OptionHelperNativeDownload *> *nativeDownloads;
 @property(nonatomic, strong) NSWindow *reportPreviewWindow;
@@ -220,7 +220,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)sender hasVisibleWindows:(BOOL)flag {
-    if (!flag && self.window != nil) {
+    if (!flag && self.hasPresentedMainWindow && self.window != nil) {
         [self.window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
     }
@@ -293,33 +293,17 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     if (![self.backend launchAndReturnError:&launchError]) {
         [self showFailure:@"无法启动内置应用服务"];
     } else {
+        // Prewarm WebKit while the application window is still hidden.
         WKWebView *webView = [self prepareWebView];
-        [self showStartupWindow];
         [webView loadHTMLString:@"" baseURL:nil];
     }
 }
 
-- (void)showStartupWindow {
-    NSView *contentView = self.window.contentView;
-    NSProgressIndicator *indicator = [[NSProgressIndicator alloc] initWithFrame:NSZeroRect];
-    indicator.style = NSProgressIndicatorStyleSpinning;
-    indicator.translatesAutoresizingMaskIntoConstraints = NO;
-    indicator.accessibilityLabel = @"正在打开OptionHelper";
-    [contentView addSubview:indicator positioned:NSWindowAbove relativeTo:self.webView];
-    [NSLayoutConstraint activateConstraints:@[
-        [indicator.centerXAnchor constraintEqualToAnchor:contentView.centerXAnchor],
-        [indicator.centerYAnchor constraintEqualToAnchor:contentView.centerYAnchor],
-    ]];
-    self.startupIndicator = indicator;
-    [indicator startAnimation:nil];
+- (void)presentMainWindowIfNeeded {
+    if (self.hasPresentedMainWindow || self.window == nil) return;
+    self.hasPresentedMainWindow = YES;
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
-}
-
-- (void)finishStartupWindow {
-    [self.startupIndicator stopAnimation:nil];
-    [self.startupIndicator removeFromSuperview];
-    self.startupIndicator = nil;
 }
 
 - (void)readBackendOutput:(NSNotification *)note {
@@ -684,7 +668,6 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 }
 
 - (void)showNavigationFailure:(NSString *)detail {
-    [self finishStartupWindow];
     if (self.webView == nil || self.appOrigin == nil) return;
     NSView *recoveryView = [self ensureNavigationRecoveryView];
     if (recoveryView == nil) return;
@@ -693,6 +676,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
     recoveryView.hidden = NO;
     [self syncWorkspaceTitlebarControlsForURL:nil];
     [self.window makeFirstResponder:recoveryView];
+    [self presentMainWindowIfNeeded];
 }
 
 - (void)loadRecoveryURL:(NSURL *)url {
@@ -767,6 +751,7 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
         // because the healthy page is still occluded.  The final failure path
         // restores the native recovery surface when a snapshot truly fails.
         self.navigationRecoveryView.hidden = YES;
+        [self presentMainWindowIfNeeded];
         WKSnapshotConfiguration *snapshotConfiguration = [[WKSnapshotConfiguration alloc] init];
         snapshotConfiguration.rect = mainView.bounds;
         snapshotConfiguration.snapshotWidth = @480;
@@ -941,7 +926,6 @@ typedef NS_ENUM(NSInteger, OptionHelperNativeDownloadKind) {
 
 - (void)webView:(WKWebView *)webView didCommitNavigation:(WKNavigation *)navigation {
     if (webView != self.webView) return;
-    if ([self isSafeAppURL:webView.URL]) [self finishStartupWindow];
     [self syncUIScaleToPage];
 }
 
@@ -1845,7 +1829,7 @@ completionHandler:(void (^)(NSArray<NSURL *> * _Nullable URLs))completionHandler
 }
 
 - (void)showFailure:(NSString *)text {
-    [self finishStartupWindow];
+    [NSApp activateIgnoringOtherApps:YES];
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = @"OptionHelper无法启动";
     alert.informativeText = text;
