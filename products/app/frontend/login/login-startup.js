@@ -10,7 +10,7 @@
     document.querySelector(".login-theme"),
   ].filter(Boolean);
 
-  const mountReferenceAnimation = () => {
+  const mountReferenceAnimation = (onSettled) => {
     const stage = splash?.querySelector?.(".login-splash__stage");
     const canEnhance = stage
       && typeof stage.append === "function"
@@ -26,8 +26,8 @@
     }
 
     const logoAsset = "/app/assets/icons/optionhelper-logo.svg";
-    const startMs = 100;
-    const flyMs = 460;
+    const startMs = 110;
+    const flyMs = 560;
     const stagger = .5;
     const particleStep = 2;
     const canvas = document.createElement("canvas");
@@ -47,6 +47,10 @@
       assembled = true;
       splash.classList.add("is-assembled");
       canvas.classList.add("is-settled");
+      const animations = stage.getAnimations?.({ subtree: true }) ?? [];
+      Promise.allSettled(animations.map((animation) => animation.finished)).then(() => {
+        if (!stopped) onSettled();
+      });
     };
 
     const prepareLogo = (svgText) => {
@@ -334,14 +338,18 @@
 
   setInteractive(false);
   root.classList.add("login-boot");
-  const referenceAnimation = mountReferenceAnimation();
   let finished = false;
-  let timer = 0;
+  let holdTimer = 0;
+  const referenceAnimation = mountReferenceAnimation(() => {
+    holdTimer = setTimeout(finish, 300);
+  });
   const finish = () => {
     if (finished) return;
     finished = true;
     referenceAnimation.stop();
-    clearTimeout(timer);
+    clearTimeout(holdTimer);
+    clearTimeout(fallbackTimer);
+    clearTimeout(watchdogTimer);
     document.removeEventListener("keydown", finish);
     splash.removeEventListener("click", finish);
     splash.classList.add("is-leaving");
@@ -350,12 +358,14 @@
     setTimeout(() => splash.remove(), 180);
   };
 
-  timer = setTimeout(finish, 760);
+  const fallbackTimer = setTimeout(() => {
+    if (!splash.classList.contains("has-reference-animation")) finish();
+  }, 760);
   document.addEventListener("keydown", finish);
   splash.addEventListener("click", finish);
 
   // The launch screen is never allowed to become a permanent application
   // state.  This independent watchdog still releases the login page if a
   // browser timer is throttled while the WebKit window is being activated.
-  setTimeout(finish, 1260);
+  const watchdogTimer = setTimeout(finish, 1660);
 })();
