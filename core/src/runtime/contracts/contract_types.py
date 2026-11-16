@@ -13,6 +13,10 @@ _K = TypeVar("_K")
 _V = TypeVar("_V")
 
 
+class ContractResolutionError(ValueError):
+    """OptionReg、合同条款或运行输入不满足约束。"""
+
+
 class FrozenDict(Mapping[_K, _V]):
     """保持Mapping兼容性的只读字典。
 
