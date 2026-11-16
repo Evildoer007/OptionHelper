@@ -19,7 +19,6 @@ from runtime.knowledger.registry_loader import load_registry
 from runtime.ports.result_store import ResultStorePort
 from runtime.contracts.public_projection import encode_contract_parameter, redact_public_money_compatibility
 from runtime.contracts.term_presentation import term_value_encoding
-from runtime.contracts.contract_api import ResolvedContract
 from runtime.contracts.research_facts import research_context, contract_research_facts
 
 from .models import (
@@ -1111,6 +1110,8 @@ def resolve_evidence(request: ReportRequest, result_store: ResultStorePort) -> d
         contract = _validate_candidate_contracts(candidate_id, modules)
         facts = None
         if contract is not None:
+            from runtime.contracts.contract_api import ResolvedContract
+
             frozen = {key: contract[key] for key in ("identity", "terms", "term_sources", "paths", "resolved_schedules", "path_case_applicability")}
             facts = contract_research_facts(ResolvedContract.from_controlled_snapshot(frozen), candidate.get("research_context"))
         candidate_evidence[candidate_id] = {
