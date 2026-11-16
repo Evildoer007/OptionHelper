@@ -77,69 +77,65 @@ class DurabilityCheckpointStore:
 
     def recover_incomplete(
         self, settled_state: Callable[[str], str | None] | None = None,
+        *,
+        succeeded_operation_ids: frozenset[str] = frozenset(),
     ) -> int:
         """Mark incomplete dispatches uncertain; never replay an external call."""
 
+        return self._recover_dispatches(settled_state, succeeded_operation_ids, recover_open=True)
+
+    def reconcile_succeeded(self, operation_ids: set[str] | frozenset[str]) -> int:
+        """Converge uncertain checkpoints for a caller's already verified jobs."""
+
+        return self._recover_dispatches(
+            lambda _operation_id: "succeeded", frozenset(operation_ids), recover_open=False,
+        )
+
+    def _recover_dispatches(
+        self,
+        settled_state: Callable[[str], str | None] | None,
+        succeeded_operation_ids: frozenset[str],
+        *,
+        recover_open: bool,
+    ) -> int:
+        if not recover_open and not succeeded_operation_ids:
+            return 0
         repaired = 0
         for header in self._event_log.headers():
             events = self._event_log.replay(header.session_id)
             terminal = {
-                str(event.data.get("operation_id", ""))
+                str(event.data.get("operation_id", "")): event.event_type
                 for event in events if event.event_type in _TERMINAL_EVENTS
             }
             for event in events:
                 if event.event_type != "dispatch_checkpointed":
                     continue
                 operation_id = str(event.data.get("operation_id", ""))
-                if not operation_id or operation_id in terminal:
+                if not operation_id:
+                    continue
+                previous = terminal.get(operation_id)
+                succeeded_job = operation_id in succeeded_operation_ids
+                if previous == "dispatch.failed" and succeeded_job:
+                    raise ValidationError("Succeeded job conflicts with a failed dispatch checkpoint")
+                if previous is not None:
+                    if previous != "dispatch.interrupted_unknown" or not succeeded_job:
+                        continue
+                elif not recover_open and not succeeded_job:
+                    continue
+                proven = settled_state(operation_id) if settled_state is not None else None
+                if previous is not None and proven != "succeeded":
                     continue
                 checkpoint = DispatchCheckpoint(
                     header.session_id,
                     operation_id,
                     str(event.data.get("operation_kind", "unknown")),
                 )
-                proven = settled_state(operation_id) if settled_state is not None else None
                 if proven == "succeeded":
                     self.succeeded(checkpoint)
                 elif proven == "failed":
                     self.failed(checkpoint)
                 else:
                     self.interrupted_unknown(checkpoint)
-                repaired += 1
-        return repaired
-
-    def reconcile_succeeded(self, operation_ids: set[str] | frozenset[str]) -> int:
-        """Converge a previously uncertain checkpoint after durable proof validation."""
-
-        pending = set(operation_ids)
-        repaired = 0
-        for header in self._event_log.headers():
-            events = self._event_log.replay(header.session_id)
-            by_operation: dict[str, list[SessionEvent]] = {}
-            for event in events:
-                operation_id = str(event.data.get("operation_id", ""))
-                if operation_id in pending and (
-                    event.event_type == "dispatch_checkpointed" or event.event_type in _TERMINAL_EVENTS
-                ):
-                    by_operation.setdefault(operation_id, []).append(event)
-            for operation_id, operation_events in by_operation.items():
-                types = [event.event_type for event in operation_events]
-                if "dispatch.succeeded" in types:
-                    pending.discard(operation_id)
-                    continue
-                if "dispatch.failed" in types:
-                    raise ValidationError("Verified job conflicts with a failed dispatch checkpoint")
-                checkpoint_event = next(
-                    (event for event in operation_events if event.event_type == "dispatch_checkpointed"), None,
-                )
-                if checkpoint_event is None:
-                    raise ValidationError("Verified job has no dispatch checkpoint")
-                self.succeeded(DispatchCheckpoint(
-                    header.session_id,
-                    operation_id,
-                    str(checkpoint_event.data.get("operation_kind", "side_effect_tool")),
-                ))
-                pending.discard(operation_id)
                 repaired += 1
         return repaired
 
