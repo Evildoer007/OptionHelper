@@ -4,13 +4,14 @@ Only registered, verified economics are projected. Position scenarios reuse the
 canonical settlement interpreter and require an explicit matching user holding.
 They describe research exposure, not executable exchange contract quantities.
 """
+from __future__ import annotations
+
 from math import isfinite
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
-from .contract_engine import (
-    ResolvedContract, PricePath, evaluate_contract, contract_loss_bound,
-    verify_current_product_rule, load_registry,
-)
+if TYPE_CHECKING:
+    from .contract_engine import ResolvedContract
 
 CONTEXT_FIELDS = frozenset({'reference_notional', 'holding_notional', 'underlying', 'market_view'})
 
@@ -34,6 +35,10 @@ def research_context(constraints):
 
 def contract_research_facts(contract: ResolvedContract, context=None):
     """Prove facts against the current registry and frozen contract snapshot."""
+    from .contract_engine import (
+        PricePath, contract_loss_bound, evaluate_contract, load_registry, verify_current_product_rule,
+    )
+
     verify_current_product_rule(contract, load_registry())
     terms = contract.terms
     facts = {'product_id': contract.product_id, 'rule_revision': contract.identity['rule_revision'],
