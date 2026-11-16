@@ -26,7 +26,7 @@ from runtime.knowledger.registry_loader import (
     load_registry as _load_registry,
     load_term_catalog as _load_term_catalog,
 )
-from .contract_types import deep_freeze, deep_thaw
+from .contract_types import ContractResolutionError, deep_freeze, deep_thaw
 
 
 DEFAULT_REGISTRY_PATH = get_default_registry_path()
@@ -273,10 +273,6 @@ def _economic_identity(identity: Mapping[str, Any]) -> dict[str, Any]:
         "reference_prices", "price_convention", "calendar_id", "calendar_revision",
     )
     return {key: identity.get(key) for key in keys}
-
-
-class ContractResolutionError(ValueError):
-    """OptionReg、合同条款或运行输入不满足约束。"""
 
 
 class FormulaError(ValueError):
