@@ -89,8 +89,8 @@ from .stores.result_store import ResultStore
 from .stores.session_store import LocalSessionStore
 from .stores.settings_store import LocalSettingsStore
 from .task_runtime.job_runner import JobRunner
-from .task_runtime.job_registry import AppJobWorker, JobRegistry
-from .task_runtime.operation_service import OperationCancelled, TaskOperationService
+from .task_runtime.job_registry import CALCULATION_MODULES, AppJobWorker, JobRecord, JobRegistry
+from .task_runtime.operation_service import OperationCancelled, TaskOperation, TaskOperationService
 from .task_runtime.compute_process import ComputeProcessSupervisor
 from .task_runtime.task_service import TaskService
 from .tool_gateway import ToolGateway
@@ -399,7 +399,7 @@ class AppServer:
         )
         self.job_registry = JobRegistry(self._documents._root / "calculation-jobs.sqlite3")
         self.dispatch_checkpoints = DurabilityCheckpointStore(self.tasks.session_event_log)
-        def verified_job_proof(record):
+        def verified_job_proof(record: JobRecord) -> dict[str, str] | None:
             if record.module_run_ref is None:
                 return None
             recovery_identity = SessionIdentity(
@@ -409,27 +409,6 @@ class AppServer:
             return record.module_run_ref
 
         self.job_registry.recover_interrupted(verified_job_proof)
-        def verified_job_proofs(records):
-            requests = []
-            references = []
-            for record in records:
-                if record.module_run_ref is None:
-                    raise ValidationError("Succeeded calculation job has no verified Core proof")
-                requests.append((
-                    SessionIdentity(
-                        record.owner_id, record.tenant_id, Role.ADMIN,
-                        f"job-recovery:{record.job_id}",
-                    ),
-                    record.module_run_ref,
-                ))
-                references.append(record.module_run_ref)
-            self.results.verify_owned_module_runs(requests)
-            return tuple(references)
-
-        self.job_registry.validate_succeeded_proofs(verified_job_proofs)
-        self.dispatch_checkpoints.reconcile_succeeded(
-            set(self.job_registry.succeeded_operation_ids())
-        )
         self.job_worker = AppJobWorker(4)
         self.operations = TaskOperationService(self._documents._root / "task-operations.sqlite3")
         def recovered_operation_result(operation, request_id: str, input_hash: str):
@@ -440,7 +419,10 @@ class AppServer:
                 input_hash,
                 request_id,
             )
-            job = self.job_registry.get_by_operation(dispatch_operation_id)
+            try:
+                job = self.job_registry.get_by_operation(dispatch_operation_id)
+            except ValidationError:
+                return None
             if (
                 job is None
                 or job.state != "succeeded"
@@ -485,11 +467,24 @@ class AppServer:
         self.model_gateway = ModelGateway(self.settings_for, self.provider_registry, self.secret_provider)
         self.agent_run_concurrency_gate = AgentRunConcurrencyGate(6)
         self.agent_run_settlement_registry = AgentRunSettlementRegistry(self.tasks.session_event_log)
-        def settled_operation_state(operation_id: str) -> str | None:
-            record = self.job_registry.get_by_operation(operation_id)
-            return record.state if record is not None else None
 
-        self.dispatch_checkpoints.recover_incomplete(settled_operation_state)
+        def settled_operation_state(operation_id: str) -> str | None:
+            # Sealed dispatches need no recovery. Prove an unsettled job before
+            # promoting it; an unavailable result must never trigger replay.
+            try:
+                record = self.job_registry.get_by_operation(operation_id)
+                if record is None:
+                    return None
+                if record.state == "succeeded" and verified_job_proof(record) is None:
+                    return None
+                return record.state
+            except (KeyError, OSError, ValidationError):
+                return None
+
+        self.dispatch_checkpoints.recover_incomplete(
+            settled_operation_state,
+            succeeded_operation_ids=frozenset(self.job_registry.succeeded_operation_ids()),
+        )
         self.conversation_tools = AppConversationToolExecutor(
             self.tool_dispatcher,
             self.registry,
@@ -549,6 +544,27 @@ class AppServer:
         self.connection_tester = ConnectionTester(self.datafetcher)
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+
+    def operation_result(self, identity: SessionIdentity, operation: TaskOperation) -> dict[str, Any]:
+        result = operation.result or {}
+        if operation.state == "succeeded" and operation.module in CALCULATION_MODULES and operation.kind == "run":
+            reference = result.get("module_run_ref")
+            if (
+                not isinstance(reference, dict)
+                or reference.get("task_id") != operation.task_id
+                or reference.get("module") != operation.module
+            ):
+                raise ValidationError("计算结果缺少对应任务的校验凭据。")
+            self.results.verify_owned_module_run(identity, reference)
+        return result
+
+    def public_operation(
+        self, identity: SessionIdentity, operation: TaskOperation, *, include_result: bool,
+    ) -> dict[str, Any]:
+        row = operation.public()
+        if include_result and operation.result is not None:
+            row["result"] = self.operation_result(identity, operation)
+        return row
 
     @property
     def url(self) -> str:
@@ -1649,10 +1665,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             task_id = path.removeprefix("/api/tasks/").removesuffix("/operations").rstrip("/")
             self.app.tasks.require_owned(identity, task_id)
             include_result = parse_qs(parsed.query).get("include_result", ["false"])[0].strip().casefold() in {"1", "true", "yes"}
+            operations = self.app.operations.list(identity, task_id, include_result=include_result)
             self._json(HTTPStatus.OK, {
                 "operations": [
-                    item.public(include_result=include_result)
-                    for item in self.app.operations.list(identity, task_id)
+                    self.app.public_operation(identity, item, include_result=include_result)
+                    for item in operations
                 ],
             })
             return
@@ -1667,7 +1684,7 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             if operation.task_id != task_id:
                 raise KeyError(path)
             if operation.state == "succeeded":
-                self._json(HTTPStatus.OK, operation.result or {})
+                self._json(HTTPStatus.OK, self.app.operation_result(identity, operation))
                 return
             if operation.state in {"failed", "cancelled", "interrupted"}:
                 status = HTTPStatus.INTERNAL_SERVER_ERROR if operation.state == "failed" else HTTPStatus.CONFLICT
@@ -1691,7 +1708,9 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
             if operation.task_id != task_id:
                 raise KeyError(path)
             include_result = parse_qs(parsed.query).get("include_result", ["true"])[0].strip().casefold() not in {"0", "false", "no"}
-            self._json(HTTPStatus.OK, {"operation": operation.public(include_result=include_result)})
+            self._json(HTTPStatus.OK, {
+                "operation": self.app.public_operation(identity, operation, include_result=include_result),
+            })
             return
         if path.startswith("/api/tasks/") and "/payoff-images/" in path:
             identity = self._identity()
