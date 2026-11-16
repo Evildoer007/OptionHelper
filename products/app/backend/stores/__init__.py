@@ -42,6 +42,8 @@ class _LocalDocumentStore:
         "results", "result_recovery", "reports", "report_documents", "product_rule_revisions",
     }
     _LARGE_DOCUMENT = 32 * 1024 * 1024
+    _REPORT_COLLECTIONS = frozenset({"reports", "report_documents"})
+    _REPORT_CACHE_LIMIT = 16 * 1024 * 1024
 
     def __init__(self, root: Path) -> None:
         self._root = root.expanduser().resolve()
@@ -53,6 +55,7 @@ class _LocalDocumentStore:
         self._locks = {name: RLock() for name in self._FILES}
         self._cache_lock = RLock()
         self._record_cache = None
+        self._report_reads = {}
         self._migrate_task_model_current_input_v1()
 
     def _migrate_task_model_current_input_v1(self) -> None:
@@ -139,6 +142,10 @@ class _LocalDocumentStore:
             except FileNotFoundError:
                 self._invalidate_record_cache(name)
                 return None
+            if name in self._REPORT_COLLECTIONS and stat.st_size >= self._LARGE_DOCUMENT:
+                selected = self._read_large_reports(name, selector="record", value=key)
+                if selected is not None:
+                    return selected.get(key)
             signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
             with self._cache_lock:
                 cached = self._record_cache
@@ -152,6 +159,78 @@ class _LocalDocumentStore:
             else:
                 records = cached[2]
             return deepcopy(records.get(key))
+
+    def read_task_reports(self, task_id: str) -> dict[str, Any]:
+        """Read one task's report proofs and artifact metadata."""
+        selected = self._read_large_reports("reports", selector="task", value=task_id)
+        if selected is not None:
+            return selected
+        return {
+            key: record for key, record in self.read("reports").items()
+            if isinstance(record, dict) and record.get("task_id") == task_id
+        }
+
+    def read_report_edit_metadata(self, report_ids: tuple[str, ...]) -> dict[str, Any]:
+        """Read the requested working-document titles and artifact metadata."""
+        if not report_ids:
+            return {}
+        selected = self._read_large_reports(
+            "report_documents", selector="edits", value=json.dumps(sorted(report_ids)),
+        )
+        if selected is not None:
+            return selected
+        records = self.read("report_documents")
+        return {key: records[key] for key in report_ids if key in records}
+
+    def _read_large_reports(self, name: str, *, selector: str, value: str) -> dict[str, Any] | None:
+        if sqlite3.sqlite_version_info < (3, 51):
+            return None
+        predicates = {
+            "record": "item.key = ?",
+            "task": "json_extract(item.value, '$.task_id') = ?",
+            "edits": "item.key IN (SELECT value FROM json_each(?))",
+        }
+        # Keep the report request and artifact proof fields. Only strip payloads
+        # from listing responses, since opening the report still needs them.
+        metadata = "jsonb_remove(item.value, '$.html', '$.chart_specs', '$.edit_requests')"
+        projection = "json(item.value)" if selector == "record" else f"""
+            CASE WHEN json_type(item.value, '$.artifacts') = 'array' THEN
+                json(jsonb_set({metadata}, '$.artifacts', (
+                    SELECT jsonb_group_array(jsonb_remove(artifact.value, '$.content', '$.content_base64'))
+                    FROM jsonb_each(item.value, '$.artifacts') AS artifact
+                )))
+            ELSE json({metadata}) END
+        """
+        cache_key = (name, selector)
+        with self._locks[name]:
+            try:
+                with self._path(name).open("rb") as stream:
+                    stat = os.fstat(stream.fileno())
+                    if stat.st_size < self._LARGE_DOCUMENT:
+                        return None
+                    signature = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                    cached = self._report_reads.get(cache_key)
+                    if cached is not None and cached[:2] == (signature, value):
+                        return {key: json.loads(raw) for key, raw in cached[2]}
+                    document = stream.read()
+            except FileNotFoundError:
+                self._report_reads.pop(cache_key, None)
+                return {}
+            try:
+                with closing(sqlite3.connect(":memory:")) as connection:
+                    rows = connection.execute(f"""
+                        SELECT item.key, {projection}
+                        FROM jsonb_each(jsonb(CAST(? AS TEXT))) AS item
+                        WHERE item.type = 'object' AND {predicates[selector]}
+                    """, (document, value)).fetchall()
+                selected = {key: json.loads(raw) for key, raw in rows}
+            except (sqlite3.Error, json.JSONDecodeError):
+                return None
+            if sum(len(raw) for _, raw in rows) <= self._REPORT_CACHE_LIMIT:
+                self._report_reads[cache_key] = (signature, value, rows)
+            else:
+                self._report_reads.pop(cache_key, None)
+            return selected
 
     def read_without_fields(self, name: str, fields: tuple[str, ...]) -> dict[str, Any]:
         """Read index metadata without materializing large embedded payloads."""
@@ -213,6 +292,8 @@ class _LocalDocumentStore:
                     stream.flush()
                     os.fsync(stream.fileno())
                 os.replace(temporary_name, target)
+                for selector in ("record", "task", "edits"):
+                    self._report_reads.pop((name, selector), None)
                 self._invalidate_record_cache(name)
             finally:
                 if os.path.exists(temporary_name):
