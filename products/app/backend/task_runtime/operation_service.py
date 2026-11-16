@@ -315,10 +315,14 @@ class TaskOperationService:
         self._require_owner(identity, record)
         return record
 
-    def list(self, identity: SessionIdentity, task_id: str, *, active_only: bool = False) -> list[TaskOperation]:
+    def list(
+        self, identity: SessionIdentity, task_id: str, *,
+        active_only: bool = False, include_result: bool = True,
+    ) -> list[TaskOperation]:
+        result_column = "result_json" if include_result else "NULL"
         query = (
             "SELECT operation_id,tenant_id,owner_id,task_id,module,kind,state,created_at,updated_at,"
-            "result_json,message,recovery_attempts,diagnostic_id "
+            f"{result_column},message,recovery_attempts,diagnostic_id "
             "FROM task_operations WHERE tenant_id=? AND owner_id=? AND task_id=?"
         )
         values: tuple[object, ...] = (identity.tenant_id, identity.principal_id, task_id)
