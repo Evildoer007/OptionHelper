@@ -3986,7 +3986,7 @@ html[data-theme="dark"] .login-splash { background: #0E1013; }
   position: relative;
   z-index: 1;
   display: block;
-  animation: login-reference-glow .58s cubic-bezier(.22, 1, .36, 1) .065s both;
+  animation: login-reference-glow .70s cubic-bezier(.22, 1, .36, 1) .07s both;
 }
 
 .login-splash__sparks {
@@ -3998,33 +3998,33 @@ html[data-theme="dark"] .login-splash { background: #0E1013; }
   height: 100%;
   opacity: 1;
   pointer-events: none;
-  transition: opacity .18s cubic-bezier(.22, 1, .36, 1);
+  transition: opacity .20s cubic-bezier(.22, 1, .36, 1);
 }
 
 .login-splash__sparks.is-settled { opacity: 0; }
 
 .login-splash__reference-disc {
-  animation: login-reference-disc .55s linear both;
+  animation: login-reference-disc .66s linear both;
 }
 
 .login-splash__reference-ink {
-  animation: login-reference-ink .48s linear .06s both;
+  animation: login-reference-ink .58s linear .066s both;
 }
 
 .login-splash__reference-arc {
-  animation: login-reference-arc .48s linear .06s both;
+  animation: login-reference-arc .58s linear .066s both;
 }
 
 .login-splash__reference-word { opacity: 0; }
 
 .login-splash.is-assembled .login-splash__reference-word {
-  animation: login-reference-word .16s cubic-bezier(.22, 1, .36, 1) both;
+  animation: login-reference-word .20s cubic-bezier(.22, 1, .36, 1) both;
 }
 
 .login-splash__reference-rule {
   transform-box: fill-box;
   transform-origin: left center;
-  animation: login-reference-rule .24s cubic-bezier(.62, 0, .28, 1) .36s both;
+  animation: login-reference-rule .30s cubic-bezier(.62, 0, .28, 1) .44s both;
 }
 
 @keyframes login-reference-disc {
