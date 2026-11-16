@@ -11,7 +11,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 _CORE_SRC = Path(__file__).resolve().parents[4] / "core" / "src"
@@ -19,9 +19,6 @@ if str(_CORE_SRC) not in sys.path:
     sys.path.insert(0, str(_CORE_SRC))
 
 from runtime.adapters.local_store import LocalResultStore, StoreError
-from runtime.contracts.contract_api import (
-    ContractResolutionError, ResolvedContract, bind_term_symbols, contract_loss_bound, evaluate_formula, load_registry,
-)
 from runtime.protocol.models import ModuleRunRef
 from runtime.research_policy import current_research_execution
 from modules.reporter.selection_facts import build_host_selection_source_refs
@@ -29,6 +26,9 @@ from modules.reporter.selection_facts import build_host_selection_source_refs
 from ..errors import AuthorizationError, ValidationError
 from ..identity.session_identity import SessionIdentity
 from . import _LocalDocumentStore
+
+if TYPE_CHECKING:
+    from runtime.contracts.contract_api import ResolvedContract
 
 
 MODULE_RUN_REF_SCHEMA = "optionhelper.module-run-ref"
@@ -412,6 +412,8 @@ class ResultStore:
             }
             for fact in _result_facts(str(record["module"]), result, run_ref["result_file_hash"])
         ]
+        from runtime.contracts.contract_api import ResolvedContract
+
         try:
             snapshot = json.loads(self.read_owned_module_run_file(identity, reference, "resolved_contract.json"))
             contract = ResolvedContract.from_controlled_snapshot(snapshot)
@@ -784,8 +786,9 @@ class ResultStore:
     def list_report_runs(self, identity: SessionIdentity, task_id: str) -> list[dict[str, Any]]:
         self._require_task_owner(identity, task_id)
         rows = []
-        documents = self._state.read("report_documents")
-        for report_run_id, record in self._state.read("reports").items():
+        reports = self._state.read_task_reports(task_id)
+        documents = self._state.read_report_edit_metadata(tuple(reports))
+        for report_run_id, record in reports.items():
             if not isinstance(record, dict) or record.get("tenant_id") != identity.tenant_id or record.get("task_id") != task_id:
                 continue
             if record.get("created_by") != identity.principal_id or not _report_visible(identity, record):
@@ -1120,9 +1123,11 @@ class _BoundModuleResultStore:
 
 
 def _validated_run_snapshot(value: Mapping[str, Any]) -> dict[str, Any]:
+    from runtime.contracts.contract_api import ResolvedContract
+
     try:
         snapshot = ResolvedContract.from_controlled_snapshot(value).to_controlled_snapshot()
-    except (TypeError, ValueError, ContractResolutionError) as error:
+    except (TypeError, ValueError) as error:
         raise ValidationError("ModuleRun缺少有效的当前输入ResolvedContract快照") from error
     identity = snapshot.get("identity")
     product_id = identity.get("product_id") if isinstance(identity, Mapping) else None
@@ -1254,6 +1259,8 @@ def _pricing_calculation_context(result: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _contract_premium_facts(contract: ResolvedContract, artifact_manifest_hash: str) -> list[dict[str, Any]]:
+    from runtime.contracts.contract_api import bind_term_symbols, load_registry
+
     """Project a registered premium term only with uniform initial cashflow evidence."""
     catalog = load_registry()["term_catalog"]
     keys = [key for key in ("Pi_0", "P_net", "p") if key in contract.terms]
@@ -1328,6 +1335,8 @@ def _premium_affine_terms(node: ast.AST, symbol: str, bindings: Mapping[str, Any
     if isinstance(node, ast.Name) and node.id == symbol:
         return 0.0, 1.0
     if symbol not in {item.id for item in ast.walk(node) if isinstance(item, ast.Name)}:
+        from runtime.contracts.contract_api import evaluate_formula
+
         return float(evaluate_formula(ast.unparse(node), bindings)), 0.0
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
         constant, slope = _premium_affine_terms(node.operand, symbol, bindings)
@@ -1739,6 +1748,8 @@ def _verified_payoff_summary(result, result_hash):
 
 
 def _contract_risk_facts(contract: ResolvedContract, artifact_hash: str) -> list[dict[str, Any]]:
+    from runtime.contracts.contract_api import contract_loss_bound
+
     facts = []
     def add(metric, label, value, evidence, unit="ratio"):
         facts.append({"fact_ref": _fact_ref(artifact_hash, "resolved_contract."+metric, value),
