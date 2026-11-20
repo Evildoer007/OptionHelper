@@ -1059,11 +1059,16 @@ html[data-optionhelper-app-hosted="true"] .canvas-toolbar > :is(
 
 html[data-optionhelper-app-hosted="true"] .canvas-toolbar .canvas-state {
   min-width: 0;
-  overflow: hidden;
+  overflow: visible !important;
   white-space: nowrap;
 }
 
+html[data-optionhelper-app-hosted="true"] .canvas-toolbar .state-dot {
+  flex-shrink: 0;
+}
+
 html[data-optionhelper-app-hosted="true"] .canvas-toolbar .canvas-state > span:last-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
