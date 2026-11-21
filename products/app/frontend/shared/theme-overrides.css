@@ -153,8 +153,12 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-new-task,
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger__copy strong,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu__action {
+html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu__action:not(.task-menu__action--danger) {
   color: var(--color-ink) !important;
+}
+
+html[data-theme="dark"] .mobile-task-drawer > .task-menu .task-menu__action--danger {
+  color: var(--red-deep) !important;
 }
 
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .mode-switch button[aria-pressed="true"] {
@@ -1036,6 +1040,46 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
   .task-item__running-dot::after { animation: none !important; opacity: 0 !important; }
   .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-label { transition: none !important; }
 }
+
+.report-library {
+  box-sizing: border-box;
+  width: min(720px, calc(100vw - 24px));
+  max-height: min(720px, calc(100dvh - 72px));
+  padding: clamp(14px, 3vw, 24px);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: 0 16px 48px rgb(0 0 0 / .17);
+  overflow: hidden;
+}
+.report-library[open] { display: flex; flex-direction: column; gap: 12px; }
+.report-library::backdrop { background: rgb(0 0 0 / .18); }
+.report-library__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.report-library__header h2 { margin: 0; font-size: 20px; }
+.report-library__header h2:focus { outline: none; }
+.report-library .drawer-close { border: 0; background: transparent; color: var(--color-ink); }
+.report-library .drawer-close:hover { background: color-mix(in srgb, var(--color-ink) 7%, transparent); }
+.report-library .drawer-close svg { width: 16px; height: 16px; }
+.report-library__search {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 9px 11px;
+  border: 1px solid var(--color-rule);
+  border-radius: 9px;
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font: inherit;
+}
+.report-library__results { min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.report-library__task { display: block; margin-block: 3px 7px; font-size: 13px; color: var(--color-muted); overflow-wrap: anywhere; }
+.report-library__delivery {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.report-library__format { font-size: 13px; color: var(--color-ink-soft); overflow-wrap: anywhere; }
 
 /* Settings uses the workspace top layer; its iframe does not replace the chat. */
 .workspace-settings-dialog {
