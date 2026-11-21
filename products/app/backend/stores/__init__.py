@@ -170,6 +170,19 @@ class _LocalDocumentStore:
             if isinstance(record, dict) and record.get("task_id") == task_id
         }
 
+    def read_reports_for_tasks(self, task_ids: tuple[str, ...]) -> dict[str, Any]:
+        """Read a report library in one pass over the report index."""
+        if not task_ids:
+            return {}
+        selected = self._read_large_reports("reports", selector="tasks", value=json.dumps(sorted(task_ids)))
+        if selected is not None:
+            return selected
+        owned = set(task_ids)
+        return {
+            key: record for key, record in self.read("reports").items()
+            if isinstance(record, dict) and isinstance(record.get("task_id"), str) and record["task_id"] in owned
+        }
+
     def read_report_edit_metadata(self, report_ids: tuple[str, ...]) -> dict[str, Any]:
         """Read the requested working-document titles and artifact metadata."""
         if not report_ids:
@@ -188,6 +201,7 @@ class _LocalDocumentStore:
         predicates = {
             "record": "item.key = ?",
             "task": "json_extract(item.value, '$.task_id') = ?",
+            "tasks": "json_extract(item.value, '$.task_id') IN (SELECT value FROM json_each(?))",
             "edits": "item.key IN (SELECT value FROM json_each(?))",
         }
         # Keep the report request and artifact proof fields. Only strip payloads
