@@ -1728,6 +1728,11 @@ class _AppRequestHandler(BaseHTTPRequestHandler):
                 "X-Content-Type-Options": "nosniff",
             })
             return
+        if path == "/api/reports":
+            identity = self._identity()
+            self.app.policy.require(identity.role, "task.read")
+            self._json(HTTPStatus.OK, {"reports": self.app.results.list_report_library(identity)})
+            return
         if path.startswith("/api/tasks/") and path.endswith("/reports"):
             identity = self._identity()
             self.app.policy.require(identity.role, "task.read")
