@@ -499,13 +499,13 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
     private func installReportToggle(in window: NSWindow) {
         guard let closeButton = window.standardWindowButton(.closeButton), let titlebar = closeButton.superview else { return }
         let button = NSButton(frame: .zero)
-        button.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "打开或收起报告库")
+        button.image = NSImage(systemSymbolName: "sidebar.right", accessibilityDescription: "打开或收起当前任务报告")
         button.contentTintColor = .secondaryLabelColor
         button.bezelStyle = .inline
         button.isBordered = false
         button.target = self
         button.action = #selector(toggleReport(_:))
-        button.toolTip = "打开或收起报告库"
+        button.toolTip = "打开或收起当前任务报告"
         button.isHidden = true
         titlebar.addSubview(button)
         reportToggle = button
@@ -557,7 +557,7 @@ final class OptionHelperApp: NSObject, NSApplicationDelegate, NSWindowDelegate, 
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .lowercased()
         let showsWorkspaceControls = route == "optchat" || route == "optdesk"
-        let reportLabel = route == "optchat" ? "打开或收起任务与交付" : "打开或收起报告库"
+        let reportLabel = route == "optchat" ? "打开或收起任务与交付" : "打开或收起当前任务报告"
         railToggle?.isHidden = !showsWorkspaceControls
         taskSearch?.isHidden = !showsWorkspaceControls
         reportToggle?.isHidden = !showsWorkspaceControls
