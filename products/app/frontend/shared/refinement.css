@@ -2563,21 +2563,23 @@ html { font-size: 14px; }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger[aria-expanded="true"] { opacity: 1; }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger:is(:hover, :focus-visible, [aria-expanded="true"]) { background: var(--task-menu-state-surface); }
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .task-menu-trigger svg { display: block; width: 12px; height: 12px; }
-body > .task-menu {
+:is(body, .mobile-task-drawer) > .task-menu {
   position: fixed;
   top: auto;
   right: auto;
   z-index: 100;
   box-sizing: border-box;
-  min-width: 218px;
+  min-width: min(218px, calc(100vw - 24px));
   max-width: min(360px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line-strong);
   border-radius: 12px;
   background: var(--surface);
   box-shadow: 0 12px 32px rgba(29, 29, 29, .18);
 }
-body > .task-menu .task-menu__action {
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action {
   display: flex;
   width: 100%;
   min-height: 40px;
@@ -2594,15 +2596,15 @@ body > .task-menu .task-menu__action {
   line-height: 22px;
   text-align: left;
 }
-body > .task-menu .task-menu__icon { display: inline-flex; width: 16px; height: 16px; flex: none; align-items: center; justify-content: center; color: var(--muted); }
-body > .task-menu .task-menu__icon svg { display: block; width: 16px; height: 16px; }
-body > .task-menu .task-menu__label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-body > .task-menu .task-menu__action:hover,
-body > .task-menu .task-menu__action:focus-visible { background: var(--canvas); color: var(--red-deep); }
-body > .task-menu .task-menu__action--danger { color: var(--red-deep); }
-body > .task-menu .task-menu__action--danger .task-menu__icon { color: inherit; }
-body > .task-menu .task-menu__action--danger:hover,
-body > .task-menu .task-menu__action--danger:focus-visible { background: var(--red-pale); }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__icon { display: inline-flex; width: 16px; height: 16px; flex: none; align-items: center; justify-content: center; color: var(--muted); }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__icon svg { display: block; width: 16px; height: 16px; }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__label { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action:hover,
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action:focus-visible { background: var(--canvas); color: var(--red-deep); }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action--danger { color: var(--red-deep); }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action--danger .task-menu__icon { color: inherit; }
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action--danger:hover,
+:is(body, .mobile-task-drawer) > .task-menu .task-menu__action--danger:focus-visible { background: var(--red-pale); }
 
 .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
   display: flex;
