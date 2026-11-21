@@ -244,7 +244,7 @@ import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
 import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { withoutFactReferences } from "/app/frontend/shared/reply-presentation.js";
-import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity } from "/app/frontend/shared/app.js";
+import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity, reportPresentation } from "/app/frontend/shared/app.js";
 import { prepareAttachmentFiles } from "/app/frontend/optchat/video-attachments.js";
 import { ATTACHMENT_ACCEPT, attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
@@ -300,6 +300,74 @@ export function decorateReportLibrary(target, reportRuns = [], onEdit = () => {}
       onEdit(reportRunId);
     });
     actions.append(edit);
+  });
+}
+
+function installWorkspaceReportLibrary(shell, onEdit) {
+  const trigger = shell.querySelector("[data-account-report-library]");
+  if (!trigger) return;
+  const dialog = document.createElement("dialog");
+  dialog.id = "workspace-report-library";
+  dialog.className = "report-library";
+  dialog.setAttribute("aria-labelledby", "workspace-report-library-title");
+  dialog.innerHTML = `<header class="report-library__header">
+    <h2 id="workspace-report-library-title" tabindex="-1" autofocus>报告库</h2>
+    <button class="drawer-close" type="button" data-library-close></button>
+  </header>
+  <input type="search" class="report-library__search" aria-label="搜索报告或任务" placeholder="搜索报告或任务">
+  <p class="report-empty" role="status" data-library-status hidden></p>
+  <div class="report-list report-library__results" data-library-results></div>`;
+  const close = dialog.querySelector("[data-library-close]");
+  const search = dialog.querySelector("input");
+  const status = dialog.querySelector("[data-library-status]");
+  const results = dialog.querySelector("[data-library-results]");
+  let reports = [];
+  let load = null;
+  setMessageActionIcon(close, "关闭报告库", "M6 6l12 12M18 6L6 18");
+  document.body.append(dialog);
+  const render = () => {
+    const query = search.value.trim().toLocaleLowerCase();
+    const visible = query ? reports.filter(report => (
+      `${reportPresentation(report).title} ${report.task_subject || ""}`.toLocaleLowerCase().includes(query)
+    )) : reports;
+    renderReports(results, visible, { showTask: true, emptyText: query ? "没有匹配的报告。" : "暂无报告。" });
+    decorateReportLibrary(results, visible, onEdit);
+  };
+  close.addEventListener("click", () => dialog.close());
+  dialog.addEventListener("close", () => {
+    if (dialog.open) return;
+    load?.abort();
+    shell.querySelector("[data-account-menu-toggle]")?.focus({ preventScroll: true });
+  });
+  dialog.addEventListener("keydown", (event) => {
+    event.stopPropagation();
+    if (event.key === "Escape" && !event.isComposing) {
+      event.preventDefault();
+      dialog.close();
+    }
+  });
+  search.addEventListener("input", render);
+  trigger.addEventListener("click", async () => {
+    if (dialog.open) return;
+    load?.abort();
+    const controller = new AbortController();
+    load = controller;
+    search.disabled = true;
+    search.value = "";
+    results.replaceChildren();
+    status.hidden = false;
+    status.textContent = "正在读取报告…";
+    dialog.showModal();
+    try {
+      const response = await request("/api/reports", { signal: controller.signal });
+      if (controller.signal.aborted || !dialog.open) return;
+      reports = response.reports || [];
+      search.disabled = false;
+      status.hidden = true;
+      render();
+    } catch {
+      if (!controller.signal.aborted && dialog.open) status.textContent = "暂时无法读取报告库。请关闭后重试。";
+    }
   });
 }
 
@@ -2646,8 +2714,8 @@ export async function startWorkspace(initialMode) {
     const desk = mode === "desk";
     const reportToggle = shell.querySelector("[data-report-toggle]");
     const panel = shell.querySelector("#task-context");
-    const openLabel = desk ? "打开报告库" : "打开任务与交付";
-    const closeLabel = desk ? "收起报告库" : "收起任务与交付";
+    const openLabel = desk ? "打开当前任务报告" : "打开任务与交付";
+    const closeLabel = desk ? "收起当前任务报告" : "收起任务与交付";
     if (reportToggle) {
       reportToggle.dataset.openLabel = openLabel;
       reportToggle.dataset.closeLabel = closeLabel;
@@ -3561,10 +3629,11 @@ export async function startWorkspace(initialMode) {
   }
 
   async function openStoredReportEditor(reportRunId) {
-    if (!currentTask?.task_id || typeof reportRunId !== 'string' || !reportRunId.trim()) return false;
+    if (typeof reportRunId !== 'string' || !reportRunId.trim()) return false;
     window.open(`/reports/${encodeURIComponent(reportRunId.trim())}/edit`, '_blank', 'noopener');
     return true;
   }
+  installWorkspaceReportLibrary(shell, openStoredReportEditor);
 
   window.addEventListener("message", (event) => {
     const moduleName = event.data?.module;
