@@ -1058,6 +1058,9 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
     "M14.4782 4.84067L14.2138 10.1152C14.1102 12.1872 14.067 13.0115 13.3866 13.9607C13.1044 14.3546 12.7498 14.6912 12.3424 14.9535C11.8239 15.2872 11.2415 15.4316 10.5585 15.4998C9.88727 15.5668 9.04946 15.5656 7.99998 15.5656C6.95051 15.5656 6.1127 15.5668 5.44142 15.4998C4.75851 15.4316 4.17602 15.2872 3.65753 14.9535C3.25012 14.6912 2.89559 14.3546 2.61332 13.9607C1.93296 13.0115 1.88979 12.1872 1.78619 10.1152L1.52179 4.84067L2.89006 4.77277L3.15343 10.0463C3.26221 12.2218 3.32452 12.6015 3.72646 13.1624C3.90825 13.4161 4.13686 13.6334 4.39927 13.8023C4.66204 13.9714 5.00263 14.0792 5.57825 14.1367C6.16562 14.1953 6.92298 14.1963 7.99998 14.1963C9.07699 14.1963 9.83434 14.1953 10.4217 14.1367C10.9973 14.0792 11.3379 13.9714 11.6007 13.8023C11.8631 13.6334 12.0917 13.4161 12.2735 13.1624C12.6755 12.6015 12.7378 12.2218 12.8465 10.0463L13.1099 4.77277L14.4782 4.84067ZM5.43011 6.22849H6.7994V11.3909H5.43011V6.22849ZM9.20056 6.22849H10.5699V11.3909H9.20056V6.22849ZM8.53597 0.434431C9.17976 0.434431 9.6522 0.426926 10.0966 0.571258C10.2357 0.616451 10.3717 0.672554 10.502 0.738948C10.9182 0.951107 11.2464 1.29099 11.7015 1.74612L12.4978 2.54136H15.3742V3.91169H0.625732V2.54136H3.50218L4.29845 1.74612C4.75358 1.29099 5.08174 0.951107 5.49801 0.738948C5.62831 0.672554 5.76425 0.616451 5.90334 0.571258C6.34776 0.426926 6.82021 0.434431 7.46399 0.434431H8.53597ZM7.46399 1.80476C6.73208 1.80476 6.51641 1.81187 6.32617 1.87369C6.25545 1.89667 6.18668 1.92533 6.12041 1.95907C5.96398 2.03878 5.82348 2.16253 5.44142 2.54136H10.5585C10.1765 2.16253 10.036 2.03878 9.87955 1.95907C9.81329 1.92533 9.74452 1.89667 9.6738 1.87369C9.48356 1.81187 9.26789 1.80476 8.53597 1.80476H7.46399Z",
   ]);
   let openMenu = null;
+  const menuPortal = target.closest(".mobile-task-drawer") || doc.body;
+  const isVisibleTrigger = (trigger) => trigger.isConnected
+    && !trigger.closest("[hidden], [inert]") && trigger.getClientRects().length > 0;
   const taskMenuItems = (menu) => Array.from(menu?.querySelectorAll('[role="menuitem"]:not([disabled])') || []);
   const focusTaskMenuItem = (menu, position) => {
     const items = taskMenuItems(menu);
@@ -1070,27 +1073,33 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
   const closeMenu = ({ restoreFocus = false } = {}) => {
     if (!openMenu) return;
     const { menu, row, trigger } = openMenu;
+    openMenu = null;
     menu.hidden = true;
     menu.removeAttribute("style");
     if (!row.contains(menu)) row.append(menu);
     trigger.setAttribute("aria-expanded", "false");
-    if (restoreFocus) trigger.focus();
-    openMenu = null;
+    if (restoreFocus && isVisibleTrigger(trigger)) trigger.focus({ preventScroll: true });
   };
   const onDocumentPointerDown = (event) => {
     if (openMenu && !openMenu.row.contains(event.target) && !openMenu.menu.contains(event.target)) closeMenu();
   };
   const onDocumentKeyDown = (event) => {
-    if (!openMenu) return;
+    if (!openMenu || event.defaultPrevented || event.isComposing) return;
+    const { menu, trigger } = openMenu;
+    if (event.target !== trigger && !menu.contains(event.target)) return;
     if (event.key === "Escape") {
       event.preventDefault();
+      event.stopPropagation();
       closeMenu({ restoreFocus: true });
-    } else if (openMenu.menu.contains(event.target) && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    } else if (event.key === "Tab") {
+      closeMenu({ restoreFocus: true });
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      focusTaskMenuItem(openMenu.menu, event.key === "ArrowDown" ? 1 : -1);
-    } else if (openMenu.menu.contains(event.target) && (event.key === "Home" || event.key === "End")) {
+      const forward = event.key === "ArrowDown";
+      focusTaskMenuItem(menu, event.target === trigger ? (forward ? "first" : "last") : (forward ? 1 : -1));
+    } else if (event.key === "Home" || event.key === "End") {
       event.preventDefault();
-      focusTaskMenuItem(openMenu.menu, event.key === "Home" ? "first" : "last");
+      focusTaskMenuItem(menu, event.key === "Home" ? "first" : "last");
     }
   };
   const onDocumentFocusIn = (event) => {
@@ -1099,28 +1108,37 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
   const positionOpenMenu = () => {
     if (!openMenu) return;
     const { menu, trigger } = openMenu;
+    if (!isVisibleTrigger(trigger)) {
+      closeMenu();
+      return;
+    }
     const rect = trigger.getBoundingClientRect();
     const margin = 12;
     const width = menu.offsetWidth;
     const height = menu.offsetHeight;
     const viewportWidth = doc.defaultView?.innerWidth || doc.documentElement.clientWidth;
     const viewportHeight = doc.defaultView?.innerHeight || doc.documentElement.clientHeight;
-    const left = Math.min(Math.max(rect.right - width, margin), viewportWidth - width - margin);
+    if (rect.bottom <= 0 || rect.top >= viewportHeight) {
+      closeMenu();
+      return;
+    }
+    const left = Math.max(margin, Math.min(rect.right - width, viewportWidth - width - margin));
     const openBelow = viewportHeight - rect.bottom >= height + 4 || rect.top < height + 4;
     const top = openBelow ? rect.bottom + 4 : rect.top - height - 4;
     menu.style.left = `${left}px`;
-    menu.style.top = `${Math.min(Math.max(top, margin), viewportHeight - height - margin)}px`;
+    menu.style.top = `${Math.max(margin, Math.min(top, viewportHeight - height - margin))}px`;
   };
   const onViewportChange = () => positionOpenMenu();
   doc.addEventListener("pointerdown", onDocumentPointerDown);
-  doc.addEventListener("keydown", onDocumentKeyDown);
+  // Let a menu handle Escape before its containing task-history dialog.
+  doc.addEventListener("keydown", onDocumentKeyDown, true);
   doc.addEventListener("focusin", onDocumentFocusIn);
   doc.addEventListener("scroll", onViewportChange, true);
   doc.defaultView?.addEventListener("resize", onViewportChange);
   target._taskMenuCleanup = () => {
     closeMenu();
     doc.removeEventListener("pointerdown", onDocumentPointerDown);
-    doc.removeEventListener("keydown", onDocumentKeyDown);
+    doc.removeEventListener("keydown", onDocumentKeyDown, true);
     doc.removeEventListener("focusin", onDocumentFocusIn);
     doc.removeEventListener("scroll", onViewportChange, true);
     doc.defaultView?.removeEventListener("resize", onViewportChange);
@@ -1197,6 +1215,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
           item.type = "button";
           item.className = className;
           item.setAttribute("role", "menuitem");
+          item.tabIndex = -1;
           const iconSlot = doc.createElement("span");
           iconSlot.className = "task-menu__icon";
           iconSlot.append(icon());
@@ -1206,7 +1225,7 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
           item.append(iconSlot, labelSlot);
           item.addEventListener("click", (event) => {
             event.stopPropagation();
-            closeMenu();
+            closeMenu({ restoreFocus: true });
             handler(task);
           });
           menu.append(item);
@@ -1215,26 +1234,28 @@ export function renderTaskList(target, tasks, activeTaskId, onSelect, actions = 
         addAction("重命名", "task-menu__action", actions.onRename, editIcon);
         addAction("删除任务", "task-menu__action task-menu__action--danger", actions.onDelete, trashIcon);
       };
-      trigger.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (openMenu?.trigger === trigger) {
-          closeMenu({ restoreFocus: true });
-          return;
-        }
+      const showMenu = (initialItem) => {
         closeMenu();
         populateMenu();
         menu.hidden = false;
-        doc.body.append(menu);
-        menu.style.position = "fixed";
+        menuPortal.append(menu);
         trigger.setAttribute("aria-expanded", "true");
         openMenu = { row, menu, trigger };
         positionOpenMenu();
+        if (menu.hidden) return;
+        if (initialItem) focusTaskMenuItem(menu, initialItem);
+        else trigger.focus({ preventScroll: true });
+      };
+      trigger.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (openMenu?.trigger === trigger) closeMenu({ restoreFocus: true });
+        else showMenu(event.detail === 0 ? "first" : null);
       });
       trigger.addEventListener("keydown", (event) => {
-        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        if (event.defaultPrevented || event.isComposing
+          || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        if (menu.hidden) trigger.click();
-        focusTaskMenuItem(menu, ["ArrowUp", "End"].includes(event.key) ? "last" : "first");
+        showMenu(["ArrowUp", "End"].includes(event.key) ? "last" : "first");
       });
       row.append(trigger, menu);
     }
@@ -1922,10 +1943,13 @@ export function renderMessages(target, messages, emptyText = "输入任务要求
   if (!target._conversationScroll?.refresh({ previousScrollTop })) target.scrollTop = target.scrollHeight;
 }
 
-export function renderReports(target, reports) {
+export function renderReports(target, reports, { showTask = false, emptyText = "当前任务尚无报告。" } = {}) {
   if (!target) return;
   if (!reports?.length) {
-    target.innerHTML = '<p class="report-empty">当前任务尚无报告。</p>';
+    const empty = document.createElement("p");
+    empty.className = "report-empty";
+    empty.textContent = emptyText;
+    target.replaceChildren(empty);
     return;
   }
   target.replaceChildren(...reports.map((report) => {
@@ -1944,15 +1968,42 @@ export function renderReports(target, reports) {
     setStatusIcon(meta, statusLabel, status);
     heading.append(name, meta);
     card.append(heading);
+    if (showTask && report.task_subject) {
+      const source = document.createElement("small");
+      source.className = "report-library__task";
+      source.textContent = report.task_subject;
+      card.append(source);
+    }
     const visibleArtifacts = [preferred, ...artifacts.filter(item => item !== preferred)]
       .filter((item, index, items) => item?.name && !item.name.startsWith("assets/")
         && /\.(html|pdf|docx)$/i.test(item.name)
         && items.findIndex(other => other?.name === item.name && other?.url === item.url) === index);
     for (const artifact of visibleArtifacts) {
-      const artifactTitle = artifact === preferred ? title
-        : artifact.name === "position-amounts.html" ? "名义规模金额附表（原始交付）"
-        : artifact.display_name || artifact.name;
-      if (artifact !== preferred) {
+      const filename = artifact.display_name || artifact.name;
+      const isAmountTable = artifact.name === "position-amounts.html";
+      let artifactTitle = artifact === preferred && !showTask ? title
+        : isAmountTable ? "名义规模金额附表（原始交付）" : filename;
+      let delivery = card;
+      if (showTask) {
+        delivery = document.createElement("div");
+        delivery.className = "report-library__delivery";
+        const caption = document.createElement("span");
+        caption.className = "report-library__format";
+        const extension = artifact.name.split(".").at(-1);
+        const repeatedName = visibleArtifacts.some(other => other !== artifact
+          && other.display_name === filename && other.name !== "position-amounts.html");
+        caption.textContent = artifactTitle;
+        if (!isAmountTable && repeatedName) {
+          artifactTitle = artifactDisplayName(artifact.name);
+          caption.textContent = artifactTitle;
+        } else if (!isAmountTable && artifact.role !== "supplement"
+          && (artifact === preferred || filename === `${String(title).trim()}.${extension}`)) {
+          caption.textContent = extension.toUpperCase();
+        }
+        caption.title = filename;
+        delivery.append(caption);
+        card.append(delivery);
+      } else if (artifact !== preferred) {
         const label = document.createElement("div");
         label.className = "report-item__heading";
         const caption = document.createElement("span");
@@ -1973,13 +2024,14 @@ export function renderReports(target, reports) {
       setMessageActionIcon(preview, `预览${artifactTitle}`, "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Zm13 0a3 3 0 1 0-6 0 3 3 0 0 0 6 0Z");
       preview.title = "预览报告";
       const download = document.createElement("a");
-      download.href = `${artifactPath}?download=1#display_name=${encodeURIComponent(artifact === preferred ? artifact.display_name || title : artifactTitle)}`;
+      const downloadName = artifact === preferred ? artifact.display_name || title : isAmountTable ? artifactTitle : filename;
+      download.href = `${artifactPath}?download=1#display_name=${encodeURIComponent(downloadName)}`;
       download.target = "_blank";
       download.rel = "noopener";
       setMessageActionIcon(download, `下载${artifactTitle}`, "M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5");
       download.title = "下载报告";
       actions.append(preview, download);
-      card.append(actions);
+      delivery.append(actions);
     }
     return card;
   }));
