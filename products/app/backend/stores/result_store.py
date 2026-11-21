@@ -785,11 +785,28 @@ class ResultStore:
 
     def list_report_runs(self, identity: SessionIdentity, task_id: str) -> list[dict[str, Any]]:
         self._require_task_owner(identity, task_id)
+        return self._list_report_rows(identity, self._state.read_task_reports(task_id))
+
+    def list_report_library(self, identity: SessionIdentity) -> list[dict[str, Any]]:
+        task_titles = {
+            task_id: str(task.get("subject") or "未命名任务")
+            for task_id, task in self._state.read("tasks").items()
+            if isinstance(task, dict)
+            and task.get("tenant_id") == identity.tenant_id
+            and task.get("created_by") == identity.principal_id
+        }
+        reports = self._state.read_reports_for_tasks(tuple(task_titles))
+        return [
+            {**row, "task_subject": task_titles[row["task_id"]]}
+            for row in self._list_report_rows(identity, reports)
+            if row["artifacts"]
+        ]
+
+    def _list_report_rows(self, identity: SessionIdentity, reports: dict[str, Any]) -> list[dict[str, Any]]:
         rows = []
-        reports = self._state.read_task_reports(task_id)
         documents = self._state.read_report_edit_metadata(tuple(reports))
         for report_run_id, record in reports.items():
-            if not isinstance(record, dict) or record.get("tenant_id") != identity.tenant_id or record.get("task_id") != task_id:
+            if not isinstance(record, dict) or record.get("tenant_id") != identity.tenant_id:
                 continue
             if record.get("created_by") != identity.principal_id or not _report_visible(identity, record):
                 continue
