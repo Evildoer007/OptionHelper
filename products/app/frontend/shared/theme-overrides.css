@@ -212,6 +212,14 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   background: transparent !important;
 }
 
+/* The compact Desk dock shares the dark workspace canvas. */
+@media (max-width: 700px) {
+  html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell][data-mode="desk"] .assistant-region {
+    background: transparent;
+    border-top-color: transparent;
+  }
+}
+
 html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .composer textarea::placeholder {
   color: var(--color-muted) !important;
 }
@@ -230,19 +238,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   color: var(--color-on-brand) !important;
 }
 
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close {
-  border-color: var(--color-rule-strong);
-  background: var(--color-paper);
-  color: var(--color-muted);
-}
-
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close:hover,
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .drawer-close:focus-visible {
-  border-color: var(--color-brand-red);
-  background: var(--color-brand-red-soft);
-  color: var(--color-brand-red);
-}
-
 html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(.report-drawer-toggle, [data-report-close]) {
   display: none !important;
 }
@@ -259,7 +254,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   .conversation-start__copy,
   .conversation-start__note,
   .assistant-panel__head span,
-  .assistant-panel__close,
   .rail-account-trigger,
   .task-item--empty
 ) {
@@ -308,11 +302,6 @@ html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-sh
   border: 0 !important;
   background: transparent !important;
   box-shadow: none !important;
-}
-
-html[data-theme="dark"] .workspace-shell.workspace-shell--desk[data-workspace-shell] .assistant-panel__close:hover {
-  background: var(--color-brand-red-soft) !important;
-  color: var(--color-brand-red) !important;
 }
 
 /* Use the shell's text colors on the account control and menu. */
@@ -866,10 +855,11 @@ html[data-native-shell="macos"] .rail-task-search { display: none; }
 .task-search-dialog::backdrop { background: rgb(0 0 0 / .28); backdrop-filter: blur(3px); }
 .task-search-dialog header { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
 .task-search-dialog input { min-width: 0; flex: 1; border: 0; border-radius: 12px; padding: 12px; background: var(--glass-soft); color: inherit; font: inherit; }
-.task-search-dialog button { border: 0; background: transparent; color: inherit; font: inherit; cursor: default; border-radius: 10px; padding: 12px; }
-.task-search-dialog header button { font-size: 24px; padding: 4px 10px; }
-.task-search-dialog > div button { display: block; width: 100%; text-align: start; overflow-wrap: anywhere; }
-.task-search-dialog button:hover, .task-search-dialog button:focus-visible { background: var(--glass-soft); }
+.task-search-dialog > div button {
+  display: block; width: 100%; text-align: start; overflow-wrap: anywhere;
+  border: 0; background: transparent; color: inherit; font: inherit; cursor: default; border-radius: 10px; padding: 12px;
+}
+.task-search-dialog > div button:is(:hover, :focus-visible) { background: var(--glass-soft); }
 @media (prefers-reduced-motion: reduce) { .task-item .task-item__date { transition: none; } }
 
 /* Elevation belongs to the rounded form, never its full-width wrappers. */
@@ -1041,6 +1031,7 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
   .workspace-shell .composer-attach-control, .workspace-shell .composer-attach-label { transition: none !important; }
 }
 
+/* Settings uses the workspace top layer; its iframe does not replace the chat. */
 .report-library {
   box-sizing: border-box;
   width: min(720px, calc(100vw - 24px));
@@ -1058,9 +1049,6 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
 .report-library__header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .report-library__header h2 { margin: 0; font-size: 20px; }
 .report-library__header h2:focus { outline: none; }
-.report-library .drawer-close { border: 0; background: transparent; color: var(--color-ink); }
-.report-library .drawer-close:hover { background: color-mix(in srgb, var(--color-ink) 7%, transparent); }
-.report-library .drawer-close svg { width: 16px; height: 16px; }
 .report-library__search {
   box-sizing: border-box;
   width: 100%;
@@ -1081,7 +1069,11 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
 }
 .report-library__format { font-size: 13px; color: var(--color-ink-soft); overflow-wrap: anywhere; }
 
-/* Settings uses the workspace top layer; its iframe does not replace the chat. */
+.workspace-settings-dialog,
+.setup-page {
+  --settings-close-inset: 16px;
+}
+
 .workspace-settings-dialog {
   box-sizing: border-box; width: min(900px, calc(100vw - 48px));
   height: min(800px, calc(100vh - 64px)); max-width: none; max-height: none;
@@ -1101,16 +1093,11 @@ html[data-theme] .workspace-shell[data-workspace-shell] .composer .composer-atta
   display: grid; height: 100%; place-content: center; justify-items: center; gap: 12px;
   color: var(--color-muted);
 }
+.workspace-settings-dialog__loading:focus { outline: none; }
 .workspace-settings-dialog__loading p { margin: 0; }
 .workspace-settings-dialog__close {
-  position: absolute; top: 20px; right: 14px;
-  display: grid; box-sizing: border-box; width: 28px; height: 28px; place-items: center;
-  padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--color-ink);
-  cursor: default;
+  position: absolute; top: var(--settings-close-inset); right: var(--settings-close-inset);
 }
-.workspace-settings-dialog__close:hover,
-.workspace-settings-dialog__close:focus-visible { background: var(--color-ground); }
-.workspace-settings-dialog__close svg { display: block; width: 14px; height: 14px; }
 @media (max-width: 700px) {
   .workspace-settings-dialog { width: calc(100vw - 20px); height: calc(100dvh - 24px); border-radius: 18px; }
 }
