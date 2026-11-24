@@ -137,24 +137,8 @@
   align-items: flex-start;
   justify-content: flex-end;
   gap: 8px;
-  padding: 20px 14px 8px 10px;
+  padding: var(--settings-close-inset) var(--settings-close-inset) 10px 10px;
 }
-
-.setup-page .settings-close {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  box-sizing: border-box;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  color: var(--color-ink);
-}
-
-.setup-page .settings-close:hover { background: var(--color-ground); }
-.setup-page .settings-close svg { display: block; width: 14px; height: 14px; fill: none; stroke: currentcolor; stroke-linecap: round; stroke-width: 1.6; }
 
 .setup-page .settings-load-status {
   margin: 16px 0;
