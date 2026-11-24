@@ -475,8 +475,7 @@ html { font-size: 14px; }
 .assistant-panel .conversation-starter span { margin-top: 3px; font-size: 11px; }
 .assistant-panel .conversation-start__note { font-size: 11px; }
 
-.assistant-toggle,
-.assistant-panel__close {
+.assistant-toggle {
   min-width: 44px;
   min-height: 44px;
 }
@@ -1477,7 +1476,6 @@ html { font-size: 14px; }
 .attachment-lightbox::backdrop { background: rgba(20, 20, 24, .52); backdrop-filter: blur(4px); }
 .attachment-lightbox__frame { display: grid; gap: 10px; padding: 12px; }
 .attachment-lightbox__head { display: flex; align-items: center; justify-content: space-between; }
-.attachment-lightbox__close { width: 32px; height: 32px; border: 0; border-radius: 999px; color: var(--muted); background: transparent; font-size: 22px; }
 .attachment-lightbox img { display: block; width: 100%; max-height: calc(100vh - 132px); border-radius: 10px; object-fit: contain; background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
 .attachment-lightbox p { margin: 0; color: var(--muted); font-size: 11px; text-align: center; }
 
@@ -2680,14 +2678,13 @@ html { font-size: 14px; }
   }
 }
 
-/* Let the account popover escape a narrow rail without changing the rail's
-   measured width or affecting the native collapse/report controls. */
-@media (min-width: 701px) {
-  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail[data-account-menu-open="true"] {
-    z-index: 20;
-    overflow: visible;
-  }
+/* The popover can extend past the rail without changing its measured width. */
+.workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail[data-account-menu-open="true"] {
+  z-index: 20;
+  overflow: visible;
+}
 
+@media (min-width: 701px) {
   .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .workspace-rail .rail-footer {
     filter: none;
   }
@@ -2698,6 +2695,19 @@ html { font-size: 14px; }
     max-width: 100%;
     min-width: 0;
     z-index: 21;
+  }
+}
+
+@media (max-width: 700px) {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-footer {
+    inset: auto;
+  }
+
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-menu {
+    inset: calc(100% + 8px) auto auto 0;
+    box-sizing: border-box;
+    width: min(244px, 100%);
+    min-width: 0;
   }
 }
 
@@ -3031,7 +3041,7 @@ html[data-native-shell="macos"] .workspace-shell.workspace-shell--desk[data-work
     height: 44px;
   }
 
-  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] .rail-account-trigger {
+  .workspace-body .workspace-shell.workspace-shell--desk[data-workspace-shell] :is(.rail-account-trigger, .rail-account-menu__item) {
     min-height: 44px;
   }
 }
