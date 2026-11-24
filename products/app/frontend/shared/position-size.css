@@ -3,7 +3,6 @@
 .position-size::backdrop { background: rgb(0 0 0 / 30%); }
 .position-size header { flex-shrink: 0; display: flex; justify-content: space-between; align-items: center; padding: 18px 24px; border-bottom: 1px solid var(--color-rule, #ddd); }
 .position-size h2 { margin: 0; font-size: 21px; }
-.position-size header button { border: 0; background: transparent; color: inherit; width: 40px; height: 40px; font-size: 26px; cursor: default; }
 .position-size__body { padding: 24px; overflow: auto; min-height: 0; }
 .position-size p { margin: 0 0 16px; }
 .position-size form { margin-bottom: 24px; }
@@ -13,7 +12,7 @@
 .position-size small { color: var(--color-muted, #61656b); display: block; line-height: 1.7; }
 .position-size__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 .position-size__actions button { min-height: 36px; padding: 6px 14px; font: inherit; border: 1px solid var(--color-rule-strong, #bbb); border-radius: 6px; background: var(--color-surface, #f5f5f5); color: inherit; cursor: default; }
-.position-size button:hover { background: var(--color-surface, #eee); }
+.position-size__actions button:hover { background: var(--color-surface, #eee); }
 .position-size :focus-visible { outline: 2px solid var(--color-ink, #222); outline-offset: 3px; }
 .position-size :disabled { opacity: .5; cursor: wait; }
 .position-size__run { border-top: 1px solid var(--color-rule, #ddd); margin-top: 28px; padding-top: 20px; }
