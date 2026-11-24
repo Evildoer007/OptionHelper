@@ -36,21 +36,6 @@ html[data-theme="dark"] .setup-page :is(.model-provider-card,.model-catalog-row)
 .preset-diagram-dialog h2 { margin: 0; font-size: 18px; font-weight: 500; line-height: 1.4; }
 .preset-diagram-dialog__content { min-width: 0; }
 .preset-diagram-dialog__content svg { display: block; width: 100%; height: auto; max-height: 64dvh; }
-.preset-diagram-dialog__close {
-  display: grid;
-  flex: 0 0 32px;
-  height: 32px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--color-muted);
-  cursor: default;
-}
-.preset-diagram-dialog__close:hover,
-.preset-diagram-dialog__close:focus-visible { background: var(--color-ground); color: var(--color-ink); }
-.preset-diagram-dialog__close svg { width: 18px; height: 18px; }
 @media (max-width: 620px) {
   .preset-diagram-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); padding: 12px 16px 18px; }
   .preset-diagram-dialog h2 { font-size: 15px; }
