@@ -1,4 +1,4 @@
-import { clearMessage, enhanceSelects, message, notifyModelConfigurationChanged, request, safeJson, setMessageActionIcon } from "/app/frontend/shared/app.js";
+import { clearMessage, enhanceSelects, message, notifyModelConfigurationChanged, request, safeJson, setCloseControl } from "/app/frontend/shared/app.js";
 import { applyServerThemePreference, currentThemePreference, installThemeControls } from "/app/frontend/shared/theme.js";
 import { setScale } from "/app/frontend/shared/ui-scale.js";
 
@@ -534,7 +534,7 @@ function openPresetDiagram(source) {
   close.type = "button";
   close.className = "preset-diagram-dialog__close";
   close.autofocus = true;
-  setMessageActionIcon(close, "关闭模式图", "M6 6l12 12M18 6L6 18");
+  setCloseControl(close, "关闭模式图");
   if (diagram) {
     const suffix = `-expanded-${++presetDiagramInstance}`;
     const marker = diagram.querySelector("marker");
