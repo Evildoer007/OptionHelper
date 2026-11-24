@@ -60,6 +60,8 @@ export function openWorkspaceSettings(section = "", trigger = document.activeEle
   frame.hidden = true;
   const loading = document.createElement("div");
   loading.className = "workspace-settings-dialog__loading";
+  loading.tabIndex = -1;
+  loading.setAttribute("autofocus", "");
   const status = document.createElement("p");
   status.setAttribute("role", "status");
   const retry = document.createElement("button");
@@ -69,7 +71,7 @@ export function openWorkspaceSettings(section = "", trigger = document.activeEle
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "workspace-settings-dialog__close";
-  setMessageActionIcon(dismiss, "关闭设置", "M6 6l12 12M18 6L6 18");
+  setCloseControl(dismiss, "关闭设置");
   loading.append(status, retry);
   const url = new URL(settingsURLFor(location, section), location.origin);
   url.searchParams.set("embedded", "1");
@@ -87,24 +89,30 @@ export function openWorkspaceSettings(section = "", trigger = document.activeEle
   };
   const load = () => {
     window.clearTimeout(loadTimeout);
+    const retryHadFocus = document.activeElement === retry;
     loadFailed = false;
     frame.hidden = true;
     loading.hidden = false;
     dismiss.hidden = false;
     status.textContent = "正在加载设置…";
     retry.hidden = true;
+    if (retryHadFocus) loading.focus({ preventScroll: true });
     url.searchParams.set("load_id", String(++loadId));
     loadTimeout = window.setTimeout(fail, 3000);
     frame.src = url.href;
   };
   const reveal = () => {
     if (loadFailed || !frame.hidden) return;
-    const hadFocus = loading.contains(document.activeElement) || document.activeElement === dismiss;
+    const focusTarget = document.activeElement;
     window.clearTimeout(loadTimeout);
     frame.hidden = false;
     loading.hidden = true;
     dismiss.hidden = true;
-    if (hadFocus) frame.contentDocument?.querySelector(".settings-close")?.focus({ preventScroll: true });
+    if (focusTarget === dismiss) {
+      frame.contentDocument?.querySelector(".settings-close")?.focus({ preventScroll: true });
+    } else if (loading.contains(focusTarget)) {
+      frame.focus({ preventScroll: true });
+    }
   };
   const close = (input) => {
     if (input === "pointer" || input === "keyboard") {
@@ -140,7 +148,6 @@ export function openWorkspaceSettings(section = "", trigger = document.activeEle
     window.dispatchEvent(new Event("focus"));
   }, { once: true });
   dialog.showModal();
-  dismiss.focus({ preventScroll: true });
   load();
 }
 
@@ -680,8 +687,7 @@ function installTaskSearch(shell) {
   input.setAttribute("aria-label", "搜索任务");
   const close = document.createElement("button");
   close.type = "button";
-  close.textContent = "×";
-  close.setAttribute("aria-label", "关闭搜索");
+  setCloseControl(close, "关闭搜索");
   const closeSearch = () => { dialog.inert = true; animateSurface(dialog, "exit", () => { dialog.close(); dialog.inert = false; }); };
   close.onclick = closeSearch;
   dialog.addEventListener("cancel", event => { event.preventDefault(); closeSearch(); });
@@ -872,8 +878,13 @@ function installLayoutControls(shell) {
     if (next) {
       constrain();
       requestAnimationFrame(() => reportClose?.focus());
-    } else if (restoreFocus && reportReturnFocus?.isConnected) {
-      reportReturnFocus.focus();
+      shell.dispatchEvent(new Event("optionhelper:report-opened"));
+    } else if (reportReturnFocus) {
+      if (restoreFocus) {
+        const target = reportReturnFocus.getClientRects().length ? reportReturnFocus : reportToggle;
+        target?.focus({ preventScroll: true });
+      }
+      reportReturnFocus = null;
     }
   }
   const syncResponsivePanels = () => {
@@ -1431,6 +1442,11 @@ export function setMessageActionIcon(control, label, path) {
   shape.setAttribute("d", path);
   svg.append(shape);
   control.replaceChildren(svg);
+}
+
+export function setCloseControl(control, label) {
+  control.classList.add("close-control");
+  setMessageActionIcon(control, label, "M6 6l12 12M18 6L6 18");
 }
 
 export function setStatusIcon(control, label, status) {
