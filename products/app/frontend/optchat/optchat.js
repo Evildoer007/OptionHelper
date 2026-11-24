@@ -244,7 +244,7 @@ import {ACTIVITY_VISUALS, activityForEvent} from '/app/frontend/shared/activity-
 import { createBloubAvatar } from '/app/frontend/shared/bloub-avatar.js';
 import { bindComposerKeyboard, enhanceSelects, clearMessage, configureModelPicker, createReasoningDisclosure, initializeWorkspace, message, renderMessages, renderReports, renderTaskList, request, safeJson, settingsURLFor, openWorkspaceSettings, taskIdFromLocation } from "/app/frontend/shared/app.js";
 import { withoutFactReferences } from "/app/frontend/shared/reply-presentation.js";
-import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setMessageActionIcon, setStatusIcon, operationActivity, reportPresentation } from "/app/frontend/shared/app.js";
+import { animateSurface, setMotionText, MODEL_CONFIGURATION_CHANGED, setCloseControl, setMessageActionIcon, setStatusIcon, operationActivity, reportPresentation } from "/app/frontend/shared/app.js";
 import { prepareAttachmentFiles } from "/app/frontend/optchat/video-attachments.js";
 import { ATTACHMENT_ACCEPT, attachmentMediaType, validateAttachments } from "/app/frontend/optchat/attachment-utils.js";
 import { createThinkingOrb } from "/app/frontend/shared/thinking-orb.js";
@@ -312,7 +312,7 @@ function installWorkspaceReportLibrary(shell, onEdit) {
   dialog.setAttribute("aria-labelledby", "workspace-report-library-title");
   dialog.innerHTML = `<header class="report-library__header">
     <h2 id="workspace-report-library-title" tabindex="-1" autofocus>报告库</h2>
-    <button class="drawer-close" type="button" data-library-close></button>
+    <button type="button" data-library-close></button>
   </header>
   <input type="search" class="report-library__search" aria-label="搜索报告或任务" placeholder="搜索报告或任务">
   <p class="report-empty" role="status" data-library-status hidden></p>
@@ -323,7 +323,7 @@ function installWorkspaceReportLibrary(shell, onEdit) {
   const results = dialog.querySelector("[data-library-results]");
   let reports = [];
   let load = null;
-  setMessageActionIcon(close, "关闭报告库", "M6 6l12 12M18 6L6 18");
+  setCloseControl(close, "关闭报告库");
   document.body.append(dialog);
   const render = () => {
     const query = search.value.trim().toLocaleLowerCase();
@@ -943,7 +943,9 @@ export async function startWorkspace(initialMode) {
   const deferredConversation = createDeferredConversation({
     render: task => renderTaskConversation(task),
     clear: () => stream.replaceChildren(),
-    restore: task => { if (!pendingConversationRequest) restoreLatestProcess(task); },
+    restore: task => {
+      if (!pendingConversationRequest || pendingConversationRequest.status === "failed") restoreLatestProcess(task);
+    },
   });
   let currentModule = new URLSearchParams(location.search).get("module") || "datafetcher";
   let assistantOpen = false;
@@ -963,6 +965,7 @@ export async function startWorkspace(initialMode) {
   let operationHistoryHydrationController = null;
   let operationHistoryLoadRevision = 0;
   let pendingConversationRequest = null;
+  let latestConversationOperation = null;
   let pendingReportRequest = null;
   let pendingReportEditor = null;
   let activeProcessPlayback = null;
@@ -1063,6 +1066,45 @@ export async function startWorkspace(initialMode) {
     if (!error?.status) return "无法连接报告服务，请检查连接后重试。";
     return error.body?.message || error.message || "报告生成失败，请稍后重试。";
   };
+  const conversationRequestIsActive = (pending) => Boolean(
+    pending && !["uncertain", "failed"].includes(pending.status)
+  );
+  const composerRetryRequest = () => {
+    const pending = pendingConversationRequest;
+    if (!pending || pending.taskId !== currentTask?.task_id || conversationRequestIsActive(pending)
+        || draftAttachments.length) return null;
+    const draft = input.value.trim();
+    if (draft && draft !== pending.content) return null;
+    if (pending.status === "failed" && latestConversationOperation
+        && (latestConversationOperation.operation_id !== pending.operationId
+          || ["succeeded", "cancelled", "interrupted"].includes(latestConversationOperation.state))) return null;
+    return pending;
+  };
+  const selectedConversationFailed = () => latestConversationOperation?.state === "failed"
+    || (pendingConversationRequest?.status === "failed"
+      && pendingConversationRequest.taskId === currentTask?.task_id
+      && (!latestConversationOperation || (latestConversationOperation.operation_id === pendingConversationRequest.operationId
+        && activeOperationStates.has(latestConversationOperation.state))));
+  const syncAssistantFailure = () => {
+    const sending = submit.dataset.sending === "true";
+    const failed = !sending && selectedConversationFailed();
+    assistantToggle.setAttribute("aria-label", failed ? "打开任务对话，最近一次处理失败" : "打开任务对话");
+    if (failed) assistantAvatar.setActivity("failed");
+    else if (!sending && assistantAvatar.element.dataset.activity === "failed") {
+      assistantAvatar.setActivity(input.value.trim() ? "listening" : "idle");
+    }
+  };
+  const recordConversationOperation = (operation) => {
+    if (operation?.kind !== "conversation" || operation.task_id !== currentTask?.task_id) return;
+    const previous = latestConversationOperation;
+    const orderKey = previous?.operation_id === operation.operation_id ? "updated_at" : "created_at";
+    if (previous && String(operation[orderKey] || "") < String(previous[orderKey] || "")) return;
+    if (previous?.operation_id === operation.operation_id && previous.state === operation.state
+        && previous.updated_at === operation.updated_at) return;
+    latestConversationOperation = operation;
+    syncAssistantFailure();
+    syncComposerAvailability();
+  };
   const setComposerSending = (button, sending) => {
     if (sending) button.classList.remove("is-sent");
     if (sending) assistantAvatar.setActivity("connecting");
@@ -1073,19 +1115,16 @@ export async function startWorkspace(initialMode) {
       composerQuestionId = "";
     }
     if (!sending) button.dataset.cancelRequested = "false";
-    button.disabled = button.dataset.cancelRequested === "true"
-      || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
     button.classList.toggle("is-generating", sending);
     form.classList.toggle("is-generating", sending);
     button.setAttribute("aria-busy", String(sending));
-    button.setAttribute("aria-label", sending
-      ? (button.dataset.cancelRequested === "true" ? "正在停止" : "停止")
-      : "发送");
+    syncAssistantFailure();
     syncComposerAvailability();
   };
   const syncComposerAvailability = () => {
     if (!modelPicker.disabled && modelPicker.value && status.dataset.reason === "model-required") clearWorkspaceStatus();
     const sending = submit.dataset.sending === "true";
+    const retry = sending ? null : composerRetryRequest();
     for (const button of followupButtons) {
       button.hidden = !sending;
       const promoteQueued = button.dataset.followupMode === "steer" && !input.value.trim()
@@ -1093,14 +1132,15 @@ export async function startWorkspace(initialMode) {
       button.disabled = followupSubmitting || (!promoteQueued && (!input.value.trim() || !modelPicker.value));
       button.title = promoteQueued ? "立即引导：优先执行第一条排队消息" : button.getAttribute("aria-label");
     }
+    submit.classList.toggle("is-retry", Boolean(retry));
     submit.disabled = attachmentPreparing || submit.dataset.cancelRequested === "true"
-      || (!sending && (modelPicker.disabled || !modelPicker.value || (!input.value.trim() && draftAttachments.length === 0)));
+      || (!sending && (modelPicker.disabled || !modelPicker.value || (!retry && !input.value.trim() && !draftAttachments.length)));
     submit.setAttribute("aria-label", sending
       ? (submit.dataset.cancelRequested === "true" ? "正在停止" : "停止")
-      : "发送");
+      : retry?.status === "uncertain" ? "核对并重试发送" : retry ? "重试发送" : "发送");
     submit.title = sending ? submit.getAttribute("aria-label")
       : modelPicker.disabled || !modelPicker.value ? "请先配置可用模型"
-        : submit.disabled ? "输入需求或添加附件后发送" : "发送";
+        : submit.disabled ? "输入需求或添加附件后发送" : submit.getAttribute("aria-label");
     if (attachmentTrigger) {
       attachmentTrigger.disabled = sending || attachmentPreparing;
       attachmentTrigger.setAttribute("aria-disabled", String(sending));
@@ -1837,7 +1877,7 @@ export async function startWorkspace(initialMode) {
     }
     const orbState = runtimeOrbState(projection);
     playback.orb.setState(orbState);
-    if (submit.dataset.sending === "true") {
+    if (currentTask?.task_id === playback.taskId && submit.dataset.sending === "true") {
       assistantAvatar.setActivity(activityForEvent(projection));
     }
     playback.orb.element.hidden = false;
@@ -1878,7 +1918,9 @@ export async function startWorkspace(initialMode) {
     playback.panel.dataset.terminal = "true";
     playback.panel.dataset.outcome = outcome;
     renderCollaboration(playback);
-    if (submit.dataset.sending === "true") assistantAvatar.setActivity(outcome === "partial" ? "needs_input" : ["interrupted", "stopped"].includes(outcome) ? "cancelled" : outcome);
+    if (currentTask?.task_id === playback.taskId && submit.dataset.sending === "true") {
+      assistantAvatar.setActivity(outcome === "partial" ? "needs_input" : ["interrupted", "stopped"].includes(outcome) ? "cancelled" : outcome);
+    }
     playback.orb.setPaused(true);
     playback.orb.element.hidden = true;
     playback.state.hidden = true;
@@ -2115,12 +2157,14 @@ export async function startWorkspace(initialMode) {
       error.status = sourceStatus;
       error.body = body;
       error.operationTerminal = true;
+      error.operationState = operation.state;
       throw error;
     }
     const error = new Error(operation.message || "后台运行未完成。");
     error.status = operation.state === "failed" ? 500 : 409;
     error.body = {};
     error.operationTerminal = true;
+    error.operationState = operation.state;
     throw error;
   };
   // Cancellation wakes status polling without pretending the worker has stopped.
@@ -2195,6 +2239,7 @@ export async function startWorkspace(initialMode) {
         activeConversation.state = operation.state;
       }
       if (currentTask?.task_id === taskId) {
+        recordConversationOperation(operation);
         setRuntimeLiveStatus(operation.message || operationStates.get(operation.state) || "正在处理当前请求。");
       }
     });
@@ -2277,7 +2322,13 @@ export async function startWorkspace(initialMode) {
     if (!taskId) { renderTaskOperations([], ""); return []; }
     const { operations = [] } = await request(`/api/tasks/${encodeURIComponent(taskId)}/operations?include_result=false`);
     if (loadRevision !== operationHistoryLoadRevision) return operations;
-    if (currentTask?.task_id === taskId) renderTaskOperations(operations, taskId);
+    if (currentTask?.task_id === taskId) {
+      const latestConversation = operations.reduce((latest, operation) => (
+        operation.kind === "conversation" && (!latest || operation.created_at > latest.created_at) ? operation : latest
+      ), null);
+      recordConversationOperation(latestConversation);
+      renderTaskOperations(operations, taskId);
+    }
     const controller = new AbortController();
     operationHistoryHydrationController = controller;
     void hydrateOperationHistory(taskId, operations, (ownedTaskId, operationId, options) => request(
@@ -2309,6 +2360,7 @@ export async function startWorkspace(initialMode) {
       const response = await waitForOperation(pending.taskId, pending.operationId, (operation) => {
         if (activeConversation?.operationId === pending.operationId) activeConversation.state = operation.state;
         if (currentTask?.task_id === pending.taskId) {
+          recordConversationOperation(operation);
           setRuntimeLiveStatus(operation.message || operationStates.get(operation.state) || "正在恢复后台对话。");
         }
       });
@@ -2319,20 +2371,23 @@ export async function startWorkspace(initialMode) {
       }
     } catch (error) {
       const recovered = await lookupConversationResponse(pending.taskId, pending.requestId).catch(() => null);
+      const retryStatus = error.operationState === "failed"
+        && (!recovered || conversationPlaybackOutcome(recovered) === "failed") ? "failed" : null;
+      settleConversationRequest(pending.taskId, pending.requestId, { retryStatus });
       if (recovered) {
-        settleConversationRequest(pending.taskId, pending.requestId);
         if (currentTask?.task_id === pending.taskId) {
           applyConversationStatus(recovered, status, taskState);
           await selectTask(pending.taskId, false).catch(() => {});
         }
       } else {
-        settleConversationRequest(pending.taskId, pending.requestId);
         if (currentTask?.task_id === pending.taskId) showWorkspaceStatus(error.message || "后台对话未完成。", true);
       }
     } finally {
       if (activeConversation?.operationId === pending.operationId) activeConversation = null;
       reconnectingOperations.delete(key);
-      if (currentTask?.task_id === pending.taskId && !pendingConversationRequest) setComposerSending(submit, false);
+      if (currentTask?.task_id === pending.taskId && !conversationRequestIsActive(pendingConversationRequest)) {
+        setComposerSending(submit, false);
+      }
     }
   };
   const resumePendingReport = async (pending) => {
@@ -2366,7 +2421,9 @@ export async function startWorkspace(initialMode) {
     }
   };
   const resumeTransientOperations = () => {
-    if (pendingConversationRequest?.operationId) void resumePendingConversation({ ...pendingConversationRequest });
+    if (pendingConversationRequest?.operationId && pendingConversationRequest.status !== "failed") {
+      void resumePendingConversation({ ...pendingConversationRequest });
+    }
     if (pendingReportRequest?.operationId) void resumePendingReport({ ...pendingReportRequest });
   };
   const syncReportActions = () => {
@@ -2421,7 +2478,7 @@ export async function startWorkspace(initialMode) {
     updateTransient(taskId, { pendingConversation: accepted });
     if (currentTask?.task_id === taskId) pendingConversationRequest = accepted;
   };
-  const settleConversationRequest = (taskId, requestId, { draft, keepPending = false } = {}) => {
+  const settleConversationRequest = (taskId, requestId, { draft, retryStatus = null } = {}) => {
     const state = readTransient(taskId);
     const pending = state.pendingConversation;
     if (pending?.taskId !== taskId || pending?.requestId !== requestId) return;
@@ -2429,13 +2486,14 @@ export async function startWorkspace(initialMode) {
       && pendingConversationRequest.requestId === requestId
       ? pendingConversationRequest
       : pending;
+    const retry = retryStatus ? { ...livePending, status: retryStatus } : null;
     updateTransient(taskId, {
       draft: draft ?? state.draft ?? "",
-      pendingConversation: keepPending ? livePending : null,
+      pendingConversation: retry,
     });
     if (currentTask?.task_id === taskId && pendingConversationRequest?.taskId === taskId
       && pendingConversationRequest.requestId === requestId) {
-      pendingConversationRequest = keepPending ? pendingConversationRequest : null;
+      pendingConversationRequest = retry;
     }
   };
   const settleReportRequest = (taskId, requestId, { keepPending = false } = {}) => {
@@ -2520,8 +2578,8 @@ export async function startWorkspace(initialMode) {
       && typeof pending.content === "string"
       ? pending
       : null;
-    setComposerSending(submit, Boolean(pendingConversationRequest && !["uncertain", "failed"].includes(pendingConversationRequest.status)));
-    if (pendingConversationRequest && (activeProcessPlayback?.taskId !== pending.taskId
+    setComposerSending(submit, conversationRequestIsActive(pendingConversationRequest));
+    if (pendingConversationRequest && pending.status !== "failed" && (activeProcessPlayback?.taskId !== pending.taskId
         || activeProcessPlayback?.requestId !== pending.requestId)) {
       activeProcessPlayback?.stop();
       activeProcessPlayback?.panel.remove();
@@ -2725,14 +2783,14 @@ export async function startWorkspace(initialMode) {
       const accessibleText = reportToggle.querySelector(".sr-only");
       if (accessibleText) accessibleText.textContent = label;
     }
-    if (panel) panel.setAttribute("aria-label", desk ? "报告库" : "任务与交付");
+    if (panel) panel.setAttribute("aria-label", desk ? "当前任务报告" : "任务与交付");
     const kicker = panel?.querySelector("[data-report-panel-kicker]");
     const heading = panel?.querySelector("[data-report-panel-title]");
     const close = panel?.querySelector("[data-report-close]");
     const operations = panel?.querySelector("[data-report-task-operations]");
     const copy = panel?.querySelector("[data-report-panel-copy]");
     if (kicker) kicker.textContent = desk ? "报告" : "当前任务";
-    if (heading) heading.textContent = desk ? "报告库" : "任务与交付";
+    if (heading) heading.textContent = desk ? "当前任务报告" : "任务与交付";
     if (close) close.setAttribute("aria-label", closeLabel);
     if (operations) {
       operations.hidden = desk;
@@ -2957,6 +3015,9 @@ export async function startWorkspace(initialMode) {
     currentTask = null;
     deferredConversation.reset();
     pendingConversationRequest = null;
+    latestConversationOperation = null;
+    assistantAvatar.setActivity("idle");
+    syncAssistantFailure();
     pendingReportRequest = null;
     pendingReportEditor = null;
     clearReportFeedback();
@@ -3312,7 +3373,11 @@ export async function startWorkspace(initialMode) {
         disposeModuleFrames();
         if (currentMode === "desk") showModuleLoading(currentModule, { replace: true });
       }
-      if (currentTask?.task_id !== task.task_id) conversationScroll.reset();
+      if (currentTask?.task_id !== task.task_id) {
+        conversationScroll.reset();
+        latestConversationOperation = null;
+        assistantAvatar.setActivity("idle");
+      }
       currentTask = task;
       window.dispatchEvent(new CustomEvent("optionhelper.task-selected", { detail: { task, readStartedAt } }));
       clearWorkspaceStatus();
@@ -3329,7 +3394,9 @@ export async function startWorkspace(initialMode) {
       });
       // Restore task-owned requests before async reports/rail updates can save scroll state.
       restoreTransient();
-      if (!pendingConversationRequest && conversationRendered) restoreLatestProcess(task);
+      if ((!pendingConversationRequest || pendingConversationRequest.status === "failed") && conversationRendered) {
+        restoreLatestProcess(task);
+      }
       if (readingPosition !== null) stream.scrollTop = readingPosition;
       if (animateTask) taskTransition.enter();
       committed = true;
@@ -3717,9 +3784,7 @@ export async function startWorkspace(initialMode) {
     broadcastModuleTheme();
   });
 
-  document.addEventListener("click", (event) => {
-    if (!event.target.closest?.("[data-report-toggle]")) return;
-    if (shell.dataset.reportOpen !== "true") return;
+  shell.addEventListener("optionhelper:report-opened", () => {
     void refreshReportLibrary().catch(() => {
       showWorkspaceStatus("报告库暂未刷新，请稍后重新打开。", true, 7000);
     });
@@ -3808,8 +3873,10 @@ export async function startWorkspace(initialMode) {
     if (!restoringScroll) saveTransient();
   }, { passive: true });
   input.addEventListener("input", () => {
-    if (submit.dataset.sending !== "true") assistantAvatar.setActivity(input.value.trim() ? "listening" : "idle");
-    if (pendingConversationRequest?.status === "uncertain") {
+    if (submit.dataset.sending !== "true" && !selectedConversationFailed()) {
+      assistantAvatar.setActivity(input.value.trim() ? "listening" : "idle");
+    }
+    if (pendingConversationRequest && !conversationRequestIsActive(pendingConversationRequest)) {
       pendingConversationRequest = null;
     }
     saveTransient();
@@ -3917,16 +3984,18 @@ export async function startWorkspace(initialMode) {
     event.preventDefault();
     if (preparingConversation || attachmentPreparing || form.inert) return;
     if (submit.dataset.sending === "true") { await queueFollowup(); return; }
-    const submittedContent = input.value.trim();
+    const retry = composerRetryRequest();
+    const submittedContent = retry?.content ?? input.value.trim();
     const submittedDrafts = [...draftAttachments];
-    if ((!submittedContent && submittedDrafts.length === 0) || !selectedModel()) {
+    const submittedAttachments = retry?.attachments ?? submittedDrafts;
+    if ((!submittedContent && submittedAttachments.length === 0) || !selectedModel()) {
       if (!selectedModel()) {
         showWorkspaceStatus("请先在设置中心添加并保存一个可用模型。", true);
         status.dataset.reason = "model-required";
       }
       return;
     }
-    if (submittedDrafts.some((item) => item.kind === "image") && !selectedModelSupportsImages()) {
+    if (submittedAttachments.some((item) => item.kind === "image") && !selectedModelSupportsImages()) {
       showWorkspaceStatus("当前模型未声明图片输入能力，请切换支持图片的模型后发送。", true);
       return;
     }
@@ -3962,13 +4031,12 @@ export async function startWorkspace(initialMode) {
         if (!selected || currentTask?.task_id !== task.task_id) return;
       }
       submittedTaskId = currentTask.task_id;
-      const resumeUncertain = pendingConversationRequest?.taskId === currentTask.task_id
-        && pendingConversationRequest.status === "uncertain";
-      const previousRequest = resumeUncertain ? { ...pendingConversationRequest } : null;
-      const effectiveContent = previousRequest ? previousRequest.content : submittedContent;
+      const retryRequest = retry?.taskId === submittedTaskId ? retry : null;
+      const previousRequest = retryRequest?.status === "uncertain" ? retryRequest : null;
+      const effectiveContent = submittedContent;
       const explicitModelSelection = previousRequest ? previousRequest.modelSelection : explicitSelectedModel();
-      const attachmentReferences = resumeUncertain
-        ? (previousRequest.attachments || [])
+      const attachmentReferences = retryRequest
+        ? (retryRequest.attachments || [])
         : await uploadDraftAttachments(submittedTaskId, submittedDrafts);
       requestId = previousRequest ? previousRequest.requestId : newWorkspaceRequestId();
       const submittedRequest = {
@@ -4045,7 +4113,8 @@ export async function startWorkspace(initialMode) {
         processPlayback?.stop({ outcome: playbackOutcome });
         pendingMessage?.remove();
         await clearDraftAttachments(submittedTaskId);
-        settleConversationRequest(submittedTaskId, requestId);
+        const retryStatus = error.operationState === "failed" && playbackOutcome === "failed" ? "failed" : null;
+        settleConversationRequest(submittedTaskId, requestId, { retryStatus });
         if (currentTask?.task_id === submittedTaskId) {
           modelPicker.dataset.userExplicitSelection = "false";
           syncComposerInputHeight();
@@ -4061,12 +4130,12 @@ export async function startWorkspace(initialMode) {
         if (currentTask?.task_id === submittedTaskId) renderTaskConversation(currentTask);
       }
       const retryableTransport = !error.operationTerminal && ![401, 403, 404].includes(error.status);
-      if (pendingConversationRequest?.requestId === requestId) {
-        pendingConversationRequest.status = retryableTransport ? "uncertain" : "failed";
-      }
+      const retryStatus = error.operationState === "failed" ? "failed" : retryableTransport ? "uncertain" : null;
+      const retainedDraft = readTransient(submittedTaskId).draft || submittedContent;
+      playbackOutcome = error.operationState || playbackOutcome;
       settleConversationRequest(submittedTaskId, requestId, {
-        draft: pendingConversationRequest?.content || submittedContent,
-        keepPending: retryableTransport,
+        draft: retainedDraft,
+        retryStatus,
       });
       const recovery = error.body?.error?.next_step || error.body?.next_step;
       const invalidRuleRevision = error.status === 409
@@ -4077,7 +4146,7 @@ export async function startWorkspace(initialMode) {
         ? `${recovery || "模型暂不可用，请在设置中心检查模型服务。"}任务内容已保留。`
         : (error.body?.message || error.message);
       if (currentTask?.task_id === submittedTaskId) {
-        input.value = pendingConversationRequest?.content || submittedContent;
+        if (!input.value.trim()) input.value = retainedDraft;
         syncComposerInputHeight();
         saveTransient();
         showWorkspaceStatus(failureMessage, true);
@@ -4091,7 +4160,7 @@ export async function startWorkspace(initialMode) {
         activeConversation = null;
       }
       if (!submittedTaskId || currentTask?.task_id === submittedTaskId) {
-        setComposerSending(submit, Boolean(pendingConversationRequest && !["uncertain", "failed"].includes(pendingConversationRequest.status)));
+        setComposerSending(submit, conversationRequestIsActive(pendingConversationRequest));
       }
     }
   });
