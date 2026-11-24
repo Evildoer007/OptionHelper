@@ -1,7 +1,7 @@
 /* Help extends the existing neutral App shell: a reading panel with searchable
    chapters, a stable left contents list, and a close action returning to work.
    Authenticated server content selects the edition; no client role switch. */
-import { request } from './app.js';
+import { request, setCloseControl } from './app.js';
 
 export function initializeUserGuide(shell) {
   const trigger = shell.querySelector('[data-user-guide]');
@@ -10,7 +10,9 @@ export function initializeUserGuide(shell) {
   const dialog = document.createElement('dialog');
   dialog.className = 'user-guide';
   dialog.setAttribute('aria-labelledby', 'user-guide-title');
-  dialog.innerHTML = `<header class="user-guide__header"><div><h1 id="user-guide-title">使用说明</h1><p data-guide-edition></p></div><button type="button" data-guide-close aria-label="关闭使用说明">×</button></header><div class="user-guide__layout"><aside class="user-guide__sidebar"><label for="user-guide-search">搜索说明</label><input id="user-guide-search" type="search" placeholder="例如：回测、报告、停止" autocomplete="off"><nav aria-label="使用说明目录" data-guide-nav></nav></aside><main class="user-guide__body" tabindex="0"><p role="status" data-guide-status>正在读取说明…</p><div data-guide-content></div></main></div>`;
+  dialog.innerHTML = `<header class="user-guide__header"><div><h1 id="user-guide-title">使用说明</h1><p data-guide-edition></p></div><button type="button" data-guide-close></button></header><div class="user-guide__layout"><aside class="user-guide__sidebar"><label for="user-guide-search">搜索说明</label><input id="user-guide-search" type="search" placeholder="例如：回测、报告、停止" autocomplete="off"><nav aria-label="使用说明目录" data-guide-nav></nav></aside><main class="user-guide__body" tabindex="0"><p role="status" data-guide-status>正在读取说明…</p><div data-guide-content></div></main></div>`;
+  const closeButton = dialog.querySelector('[data-guide-close]');
+  setCloseControl(closeButton, '关闭使用说明');
   document.body.append(dialog);
   const status = dialog.querySelector('[data-guide-status]');
   const content = dialog.querySelector('[data-guide-content]');
@@ -21,7 +23,7 @@ export function initializeUserGuide(shell) {
   search.disabled = true;
   let chapters = [];
   const close = () => dialog.close();
-  dialog.querySelector('[data-guide-close]').addEventListener('click', close);
+  closeButton.addEventListener('click', close);
   dialog.addEventListener('close', () => trigger.focus());
   dialog.addEventListener('click', event => {
     if (event.target !== dialog) return;
@@ -45,7 +47,7 @@ export function initializeUserGuide(shell) {
   trigger.addEventListener('click', async () => {
     if (dialog.open) return;
     dialog.showModal();
-    dialog.querySelector('[data-guide-close]').focus();
+    closeButton.focus();
     if (loaded || loading) return;
     loading = true;
     status.hidden = false;
